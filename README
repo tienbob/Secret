@@ -1,0 +1,15 @@
+Overview:
+Day la script chay job scrape tu linkedin 
+Chi chay tren window va dung edge da dang nhap linkedin
+Requirements:
+- Python 3.13+
+- Selenium
+- windows OS
+- Edge Browser
+- LinkedIn account (already logged in) via Edge
+How to use:
+- pip install selenium
+- Download Edge WebDriver matching your Edge version from https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/
+- Place the WebDriver executable in your system PATH or specify its location in the script
+- Update the JOB_KEYWORDS, JOB_LOCATION, JOB_WORKPLACE_TYPE, and MAX_PAGES_TO_SCRAPE variables in the script as needed
+- Run the script: python scrape.py
