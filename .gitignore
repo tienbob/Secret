@@ -1,0 +1,26 @@
+# Python virtual environment
+venv/
+
+# Output files directory (auto-cleaned after 3 days)
+scraper_outputs/
+
+# Temporary scraper scripts
+temp_scraper_*.py
+
+# CSV and JSON files
+*.csv
+*.json
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+chrome_profile/

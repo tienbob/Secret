@@ -18,7 +18,7 @@ JOB_WORKPLACE_TYPE = "remote"
 MAX_PAGES_TO_SCRAPE = 1
 
 # Login Configuration
-MANUAL_LOGIN = False  # Set to True for manual login, False for headless mode
+MANUAL_LOGIN = False
 
 # --- Dynamically Build Search URL ---
 WORKPLACE_FILTER_CODES = {"on-site": "1", "remote": "2", "hybrid": "3"}

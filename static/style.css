@@ -1,0 +1,117 @@
+:root {
+    --primary: #2563eb;
+    --bg: #f8fafc;
+    --surface: #ffffff;
+    --text: #1e293b;
+    --border: #e2e8f0;
+    --success: #10b981;
+    --error: #ef4444;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 2rem;
+}
+
+.container { max-width: 800px; margin: 0 auto; }
+
+.card {
+    background: var(--surface);
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    padding: 2rem;
+    margin-bottom: 2rem;
+    border: 1px solid var(--border);
+}
+
+h1 { margin-top: 0; }
+
+.form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+}
+
+.full { grid-column: span 2; }
+
+input, select {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-top: 0.25rem;
+}
+
+.btn {
+    background: var(--primary);
+    color: white;
+    border: none;
+    padding: 1rem;
+    width: 100%;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 1rem;
+}
+
+.btn:disabled { opacity: 0.7; }
+.btn-success { background: var(--success); width: auto; padding: 0.5rem 1rem; }
+
+/* Status Panel */
+#statusPanel {
+    display: none;
+    background: #eff6ff;
+    border-color: #bfdbfe;
+}
+
+.status-badge {
+    padding: 4px 12px;
+    border-radius: 99px;
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.status-badge.running {color: #1e40af; }
+.status-badge.completed {color: #065f46; }
+.status-badge.error { color: #991b1b; }
+
+.progress-bar {
+    height: 6px;
+    background: #cbd5e1;
+    border-radius: 3px;
+    margin: 1rem 0;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--primary);
+    transition: width 0.3s;
+}
+
+.progress-fill.pulse { animation: pulse 1.5s infinite; }
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
+/* History List */
+.job-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.job-info h4 { margin: 0 0 4px 0; }
+.meta { font-size: 13px; color: #64748b; }

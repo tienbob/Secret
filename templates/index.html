@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Universal Job Scraper</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Link to Static CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="container">
+    <div class="card">
+        <h1>Job Scraper</h1>
+        <form id="scrapeForm">
+            <div class="form-grid">
+                <div class="full">
+                    <label>Platform</label>
+                    <select id="platform">
+                        <option value="linkedin">LinkedIn</option>
+                        <option value="rubyonremote">RubyOnRemote</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Keywords</label>
+                    <input type="text" id="job_keywords" value="Ruby on Rails" placeholder="e.g. Python">
+                </div>
+                <div>
+                    <label>Location</label>
+                    <input type="text" id="job_location" value="Japan" placeholder="e.g. Remote">
+                </div>
+                
+                <!-- UPDATED: Pages Field is now a Number Input -->
+                <div>
+                    <label>Pages to Scrape</label>
+                    <input type="number" id="max_pages" value="1" min="1" max="10" placeholder="1-10">
+                </div>
+
+                <div style="display:flex; align-items:center; margin-top:28px;">
+                    <input type="checkbox" id="headless" style="width:auto; margin-right:8px;">
+                    <label for="headless">Headless Mode</label>
+                </div>
+            </div>
+            <button type="submit" id="startBtn" class="btn">Start Scraping</button>
+        </form>
+    </div>
+
+    <div id="statusPanel" class="card">
+        <div style="display:flex; justify-content:space-between;">
+            <h3>Current Status</h3>
+            <span id="statusBadge" class="status-badge running">RUNNING</span>
+        </div>
+        <div class="progress-bar">
+            <div id="progressFill" class="progress-fill pulse"></div>
+        </div>
+        <p id="statusText">Initializing...</p>
+        <div id="downloadArea" style="display:none; margin-top:1rem;">
+            <button id="downloadBtn" class="btn btn-success">Download CSV</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>History</h3>
+        <div id="jobHistory"></div>
+    </div>
+</div>
+
+<!-- Link to Static JS -->
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+
+</body>
+</html>
