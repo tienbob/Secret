@@ -55,14 +55,14 @@ http://localhost:5000
 
 ```python
 .
-├── app.py                    # Flask backend server
+├── app.py                   # Flask backend server
 ├── templates/
 │   └── index.html           # Main web interface
 ├── static/
 │   ├── style.css            # Styling
 │   └── script.js            # Frontend logic
-├── linkedin_v2.py           # LinkedIn scraper (existing)
-├── rubyonremote_v1.py       # RubyOnRemote scraper (existing)
+├── linkedin_scraper.py      # LinkedIn scraper (existing)
+├── rubyonremote_scraper.py  # RubyOnRemote scraper (existing)
 └── requirements_web.txt     # Web dependencies
 ```
 
@@ -73,61 +73,3 @@ http://localhost:5000
   - LinkedIn: `linkedin_{keywords}_{location}.csv`
   - RubyOnRemote: `rubyonremote_{keywords}_{location}.csv`
 - Job history is kept in memory and will reset when you restart the server
-
-## Troubleshooting
-
-### Timeout Errors
-
-**Problem:** `Connection timeout` or `ReadTimeoutError`
-
-**Solutions:**
-- Reduce the number of pages to scrape (try 1-2 pages first)
-- Disable headless mode to see what's happening in the browser
-- Check your internet connection speed
-- The website might be experiencing high load or blocking automated requests
-- Try again later when the website is less busy
-- The scraper will automatically timeout after 10 minutes
-
-### Login Required (LinkedIn)
-
-**Problem:** LinkedIn asks you to log in
-
-**Solutions:**
-- Disable headless mode before starting
-- When the browser opens, manually log in to LinkedIn
-- Wait for the jobs search page to load
-- The scraper will detect when you're logged in and continue
-
-### Browser Driver Issues
-
-**Problem:** `WebDriverException` or browser won't start
-
-**Solutions:**
-- Make sure Chrome or Edge browser is installed
-- Try running: `pip install --upgrade selenium webdriver-manager`
-- Close all Chrome/Edge windows before running
-- On Linux, you may need to install: `sudo apt-get install chromium-browser`
-
-### No Results Found
-
-**Problem:** Scraping completes but finds 0 results
-
-**Solutions:**
-- Check if your search keywords and location are correct
-- Try broader search terms (e.g., "Developer" instead of "Senior Ruby on Rails Developer")
-- The location might not have jobs matching your criteria
-- Try a different platform (LinkedIn vs RubyOnRemote)
-
-### Slow Performance
-
-**Solutions:**
-- Enable headless mode (faster, but you can't see progress)
-- Reduce max pages to scrape (1-3 recommended)
-- Close other browser windows
-- Free up system memory
-
-### Other Issues
-
-**Port already in use**: Change the port in `app.py` (last line) to a different number
-
-**Script not found**: Make sure `linkedin_v2.py` and `rubyonremote_v1.py` are in the same directory as `app.py`
