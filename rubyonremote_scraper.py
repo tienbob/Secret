@@ -172,11 +172,14 @@ def main():
                 continue
             
         # Save
-        clean_kw = slugify(JOB_KEYWORDS)
-        clean_loc = slugify(JOB_LOCATION)
+        clean_kw = JOB_KEYWORDS.replace(" ", "_").replace("/", "-")
+        clean_loc = JOB_LOCATION.replace(" ", "_").replace("/", "-")
+        
+        # Format: rubyonremote_KEYWORDS_LOCATION.csv
         filename = f"rubyonremote_{clean_kw}_{clean_loc}.csv"
         
         if all_data:
+            print(f"\n💾 Saving {len(all_data)} jobs to: {filename}")
             with open(filename, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=all_data[0].keys())
                 writer.writeheader()

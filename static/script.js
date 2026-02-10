@@ -17,6 +17,10 @@ document.getElementById('scrapeForm').addEventListener('submit', async (e) => {
         platform: document.getElementById('platform').value,
         job_keywords: document.getElementById('job_keywords').value,
         job_location: document.getElementById('job_location').value,
+        workplace_type: document.getElementById('workplace_type').value,
+        industry_filter: document.getElementById('industry_filter').value,
+        time_posted: document.getElementById('time_posted').value,
+        sort_by: document.getElementById('sort_by').value,
         max_pages: parseInt(document.getElementById('max_pages').value),
         headless: document.getElementById('headless').checked
     };

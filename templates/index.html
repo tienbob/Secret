@@ -24,11 +24,76 @@
                 </div>
                 <div>
                     <label>Keywords</label>
-                    <input type="text" id="job_keywords" value="Ruby on Rails" placeholder="e.g. Python">
+                    <input type="text" id="job_keywords" value="Ruby on Rails" placeholder="e.g. Python Developer">
+                    <small style="color: #666; font-size: 0.85em; display: block; margin-top: 4px;">
+                        Exact phrase search (auto-quoted)
+                    </small>
                 </div>
                 <div>
                     <label>Location</label>
-                    <input type="text" id="job_location" value="Japan" placeholder="e.g. Remote">
+                    <select id="job_location">
+                        <option value="Europe">Europe (All)</option>
+                        <option value="United States">United States</option>
+                        <option value="Japan" selected>Japan</option>
+                        <option value="United Kingdom">United Kingdom</option>
+                        <option value="Canada">Canada</option>
+                        <option value="Germany">Germany</option>
+                        <option value="France">France</option>
+                        <option value="Spain">Spain</option>
+                        <option value="Italy">Italy</option>
+                        <option value="Netherlands">Netherlands</option>
+                        <option value="Poland">Poland</option>
+                        <option value="Sweden">Sweden</option>
+                        <option value="Switzerland">Switzerland</option>
+                        <option value="India">India</option>
+                        <option value="Australia">Australia</option>
+                        <option value="Singapore">Singapore</option>
+                        <option value="Vietnam">Vietnam</option>
+                    </select>
+                    <small style="color: #666; font-size: 0.85em; display: block; margin-top: 4px;">
+                        Works with both LinkedIn (geoId) and RubyOnRemote
+                    </small>
+                </div>
+                
+                <div>
+                    <label>Workplace Type</label>
+                    <select id="workplace_type">
+                        <option value="">All</option>
+                        <option value="on-site">On-site</option>
+                        <option value="remote" selected>Remote</option>
+                        <option value="hybrid">Hybrid</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label>Industry (LinkedIn)</label>
+                    <select id="industry_filter">
+                        <option value="">All Industries</option>
+                        <option value="4">Computer Software</option>
+                        <option value="6">Internet</option>
+                        <option value="96">Information Technology</option>
+                        <option value="3">Staffing & Recruiting</option>
+                        <option value="51">Marketing & Advertising</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label>Posted Within</label>
+                    <select id="time_posted">
+                        <option value="">Any Time</option>
+                        <option value="r86400">Last 24 hours</option>
+                        <option value="r604800">Last Week</option>
+                        <option value="r2592000">Last Month</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label>Sort By</label>
+                    <select id="sort_by">
+                        <option value="">Most Relevant</option>
+                        <option value="R">Most Recent</option>
+                        <option value="DD">Date Posted</option>
+                    </select>
                 </div>
                 
                 <!-- UPDATED: Pages Field is now a Number Input -->

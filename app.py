@@ -22,10 +22,6 @@ job_counter = 0
 job_lock = threading.Lock()
 
 # --- Helpers ---
-def slugify(text):
-    if not text: return ""
-    return re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')
-
 def cleanup_old_files():
     try:
         cutoff_time = time.time() - (3 * 24 * 60 * 60)
@@ -105,6 +101,10 @@ def run_scraper(job_id, data):
         content = re.sub(r'JOB_LOCATION\s*=\s*["\'].*?["\']', f'JOB_LOCATION = "{data.get("job_location")}"', content)
         content = re.sub(r'MAX_PAGES_TO_SCRAPE\s*=\s*\d+', f'MAX_PAGES_TO_SCRAPE = {data.get("max_pages", 1)}', content)
         content = re.sub(r'HEADLESS\s*=\s*(True|False)', f'HEADLESS = {data.get("headless", False)}', content)
+        content = re.sub(r'JOB_WORKPLACE_TYPE\s*=\s*["\'].*?["\']', f'JOB_WORKPLACE_TYPE = "{data.get("workplace_type", "remote")}"', content)
+        content = re.sub(r'INDUSTRY_FILTER\s*=\s*["\'].*?["\']', f'INDUSTRY_FILTER = "{data.get("industry_filter", "")}"', content)
+        content = re.sub(r'TIME_POSTED_FILTER\s*=\s*["\'].*?["\']', f'TIME_POSTED_FILTER = "{data.get("time_posted", "")}"', content)
+        content = re.sub(r'SORT_BY\s*=\s*["\'].*?["\']', f'SORT_BY = "{data.get("sort_by", "R")}"', content)
         
         temp_script = f'temp_{platform_name}_{job_id}.py'
         with open(temp_script, 'w', encoding='utf-8') as f:
@@ -158,14 +158,19 @@ def run_scraper(job_id, data):
                 elif "Processing ID" in line:
                     scraping_jobs[job_id]['progress'] = f"Analyzing job..."
                 
-                # 3. Successful Scrape
-                # LinkedIn: "   -> Captured: Senior Engineer"
+                # 3. Successful Scrape or Skip
+                # LinkedIn: "   -> Scraped: Senior Engineer at Company"
                 # Ruby: "Scraped: Senior Engineer"
-                elif "Captured:" in line or "Scraped:" in line:
+                # Skip: "   -> Skipped duplicate: Title at Company"
+                elif "Scraped:" in line:
                     scraping_jobs[job_id]['jobs_processed'] += 1
                     count = scraping_jobs[job_id]['jobs_processed']
-                    title = line.split(":", 1)[1].strip()[:30] # Get title preview
+                    # Extract just the title (before " at ")
+                    after_colon = line.split(":", 1)[1].strip()
+                    title = after_colon.split(" at ")[0][:30] if " at " in after_colon else after_colon[:30]
                     scraping_jobs[job_id]['progress'] = f"Saved: {title}..."
+                elif "Skipped duplicate:" in line:
+                    scraping_jobs[job_id]['progress'] = "Skipping duplicate..."
 
         # 5. Check Exit Code
         stderr_output = process.stderr.read()
@@ -176,20 +181,19 @@ def run_scraper(job_id, data):
             
             # Move File logic
             # Determine expected filename based on scraper logic
-            if platform_name == 'linkedin':
-                old_name = f"linkedin_{data.get('job_keywords').replace(' ', '_')[:20]}_{data.get('job_location').replace(' ', '_')[:20]}.csv"
-            else:
-                k_slug = slugify(data.get('job_keywords'))
-                l_slug = slugify(data.get('job_location'))
-                old_name = f"rubyonremote_{k_slug}_{l_slug}.csv"
+            clean_kw = data.get('job_keywords', '').replace(' ', '_').replace('/', '-')
+            clean_loc = data.get('job_location', '').replace(' ', '_').replace('/', '-')
             
-            new_name = f"{platform_name}_{job_id}_{scraping_jobs[job_id]['timestamp']}.csv"
+            # Format: platform_KEYWORDS_LOCATION.csv (keep original format for download)
+            old_name = f"{platform_name}_{clean_kw}_{clean_loc}.csv"
+            new_name = f"{platform_name}_{clean_kw}_{clean_loc}.csv"
             new_path = os.path.join(OUTPUT_DIR, new_name)
             
             if os.path.exists(old_name):
                 import shutil
                 shutil.move(old_name, new_path)
                 scraping_jobs[job_id]['output_file'] = new_path
+                scraping_jobs[job_id]['output_filename'] = new_name
                 # Count
                 with open(new_path, 'r', encoding='utf-8') as f:
                     scraping_jobs[job_id]['results_count'] = sum(1 for _ in f) - 1
@@ -218,7 +222,10 @@ def get_status(job_id):
 def download_results(job_id):
     job = scraping_jobs.get(job_id)
     if not job or not job.get('output_file'): return jsonify({'error': 'File not found'}), 404
-    return send_file(job['output_file'], as_attachment=True)
+    
+    # Use the stored filename or extract from path
+    download_name = job.get('output_filename') or os.path.basename(job['output_file'])
+    return send_file(job['output_file'], as_attachment=True, download_name=download_name)
 
 @app.route('/api/jobs')
 def list_jobs():
@@ -230,4 +237,4 @@ def list_jobs():
 
 if __name__ == '__main__':
     start_cleanup_thread()
-    app.run(debug=True, port=5000)
+    app.run(port=5000)
