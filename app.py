@@ -245,11 +245,147 @@ def download_results(job_id):
 
 @app.route('/api/jobs')
 def list_jobs():
-    # Return jobs sorted by ID descending
-    return jsonify({'jobs': [
-        {**v, 'job_id': k} 
-        for k, v in sorted(scraping_jobs.items(), key=lambda item: item[0], reverse=True)
-    ]})
+    # Build a lookup of latest contact job by source scraping job
+    latest_contact_by_scrape = {}
+    for cid, cjob in sorted(contact_jobs.items(), key=lambda item: item[0]):
+        src = cjob.get('source_scraping_job')
+        if src is not None:
+            latest_contact_by_scrape[src] = {
+                'contact_job_id': cid,
+                'status': cjob.get('status'),
+                'progress': cjob.get('progress'),
+                'started_at': cjob.get('started_at'),
+                'output_csv': cjob.get('output_csv')
+            }
+
+    jobs_payload = []
+    for k, v in sorted(scraping_jobs.items(), key=lambda item: item[0], reverse=True):
+        latest_contact = latest_contact_by_scrape.get(k)
+        scrape_status = str(v.get('status', '')).lower()
+        jobs_payload.append({
+            **v,
+            'job_id': k,
+            'can_find_contacts': scrape_status == 'completed',
+            'latest_contact_job': latest_contact
+        })
+
+    return jsonify({'jobs': jobs_payload})
+
+# --- CEO/CTO Contact Finder Integration ---
+contact_jobs = {}  # Track contact finding jobs
+contact_counter = 0
+contact_lock = threading.Lock()
+
+@app.route('/api/find-contacts/<int:job_id>', methods=['POST'])
+def find_contacts_for_job(job_id):
+    """
+    Find CEO/CTO contacts for a completed scraping job
+    """
+    global contact_counter
+    
+    job = scraping_jobs.get(job_id)
+    if not job:
+        return jsonify({'error': 'Scraping job not found'}), 404
+    
+    if job['status'] != 'completed':
+        return jsonify({'error': f'Scraping job not completed (status: {job["status"]})'}), 400
+    
+    input_csv = job.get('output_file')
+    if not input_csv or not os.path.exists(input_csv):
+        return jsonify({'error': 'Scraping output CSV not found'}), 404
+    
+    with contact_lock:
+        contact_counter += 1
+        contact_job_id = contact_counter
+    
+    # Initialize contact job
+    contact_jobs[contact_job_id] = {
+        'status': 'running',
+        'progress': 'Initializing contact finder...',
+        'source_scraping_job': job_id,
+        'input_csv': input_csv,
+        'output_csv': None,
+        'started_at': datetime.now().isoformat(),
+        'contacts_found': 0,
+        'total_companies': 0,
+        'api_calls': 0,
+        'error': None
+    }
+    
+    # Start contact finding in background
+    thread = threading.Thread(
+        target=run_contact_finder,
+        args=(contact_job_id, input_csv)
+    )
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({'contact_job_id': contact_job_id, 'status': 'started'})
+
+def run_contact_finder(contact_job_id, input_csv):
+    """
+    Run the contact finder agent in background
+    """
+    try:
+        from contact_extractor import ContactExtractor
+        
+        contact_jobs[contact_job_id]['progress'] = 'Loading CSV...'
+        
+        extractor = ContactExtractor(input_csv, OUTPUT_DIR)
+        
+        contact_jobs[contact_job_id]['progress'] = 'Extracting executive contacts...'
+        
+        # Extract contacts (set a reasonable sample if too large)
+        import pandas as pd
+        df = pd.read_csv(input_csv)
+        sample_size = min(100, len(df))  # Limit to 100 companies for API rate limits
+        
+        enriched_records = extractor.extract_contacts(sample_size=sample_size)
+        
+        if enriched_records:
+            contact_jobs[contact_job_id]['progress'] = 'Saving enriched CSV...'
+            output_path = extractor.save_enriched_csv(enriched_records)
+            
+            contact_jobs[contact_job_id]['output_csv'] = output_path
+            contact_jobs[contact_job_id]['contacts_found'] = extractor.stats['contacts_found']
+            contact_jobs[contact_job_id]['total_companies'] = extractor.stats['total_companies']
+            contact_jobs[contact_job_id]['api_calls'] = extractor.stats['api_calls']
+            contact_jobs[contact_job_id]['status'] = 'completed'
+            contact_jobs[contact_job_id]['progress'] = 'Completed'
+        else:
+            contact_jobs[contact_job_id]['status'] = 'error'
+            contact_jobs[contact_job_id]['error'] = 'No records were enriched'
+    
+    except Exception as e:
+        contact_jobs[contact_job_id]['status'] = 'error'
+        contact_jobs[contact_job_id]['error'] = str(e)
+        print(f"[CONTACT JOB {contact_job_id} ERROR] {e}")
+
+@app.route('/api/find-contacts/status/<int:contact_job_id>')
+def get_contact_job_status(contact_job_id):
+    """
+    Get status of a contact finding job
+    """
+    job = contact_jobs.get(contact_job_id)
+    if not job:
+        return jsonify({'error': 'Contact job not found'}), 404
+    return jsonify(job)
+
+@app.route('/api/find-contacts/download/<int:contact_job_id>')
+def download_contact_results(contact_job_id):
+    """
+    Download enriched CSV with contact information
+    """
+    job = contact_jobs.get(contact_job_id)
+    if not job or not job.get('output_csv'):
+        return jsonify({'error': 'Enriched CSV not found'}), 404
+    
+    output_csv = job['output_csv']
+    if not os.path.exists(output_csv):
+        return jsonify({'error': 'File not found'}), 404
+    
+    download_name = os.path.basename(output_csv)
+    return send_file(output_csv, as_attachment=True, download_name=download_name)
 
 if __name__ == '__main__':
     start_cleanup_thread()

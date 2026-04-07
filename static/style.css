@@ -60,7 +60,15 @@ input, select {
 }
 
 .btn:disabled { opacity: 0.7; }
-.btn-success { background: var(--success); width: auto; padding: 0.5rem 1rem; }
+.btn-success { background: var(--success); width: auto; padding: 0.5rem 1rem; margin-top: 0; }
+.btn-secondary { background: #0f766e; color: #ffffff; width: auto; padding: 0.5rem 1rem; margin-top: 0; }
+
+#downloadArea, #contactDownloadArea {
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-top: 1rem;
+}
 
 /* Status Panel */
 #statusPanel {

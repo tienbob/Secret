@@ -143,8 +143,23 @@
         </div>
         <p id="statusRunAt" style="color: #64748b; font-size: 0.9rem; margin-bottom: 0.5rem;"></p>
         <p id="statusText">Initializing...</p>
-        <div id="downloadArea" style="display:none; margin-top:1rem;">
+        <div id="downloadArea" style="display:none;">
             <button id="downloadBtn" class="btn btn-success">Download CSV</button>
+            <button id="findContactsBtn" class="btn btn-secondary">Find Contacts</button>
+        </div>
+    </div>
+
+    <div id="contactStatusPanel" class="card" style="display:none;">
+        <div style="display:flex; justify-content:space-between;">
+            <h3>Contact Finder Status</h3>
+            <span id="contactStatusBadge" class="status-badge running">RUNNING</span>
+        </div>
+        <div class="progress-bar">
+            <div id="contactProgressFill" class="progress-fill pulse" style="width: 20%;"></div>
+        </div>
+        <p id="contactStatusText">Initializing contact finder...</p>
+        <div id="contactDownloadArea" style="display:none;">
+            <button id="contactDownloadBtn" class="btn btn-success">Download Contacts CSV</button>
         </div>
     </div>
 
