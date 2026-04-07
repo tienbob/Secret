@@ -1,27 +1,137 @@
 from flask import Flask, render_template, request, jsonify, send_file
 import subprocess
 import os
-import json
 import threading
 from datetime import datetime
-import csv
 import uuid
 import time
 import re
-import signal
 import platform
 import sys
+import pandas as pd
+
+import db
 
 app = Flask(__name__)
+
+
+@app.errorhandler(404)
+def handle_404(err):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Not found'}), 404
+    return err
+
+
+@app.errorhandler(500)
+def handle_500(err):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Internal server error'}), 500
+    return err
 
 # --- Configuration ---
 OUTPUT_DIR = 'scraper_outputs'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Store scraping job status
-scraping_jobs = {}
-job_counter = 0
-job_lock = threading.Lock()
+active_scrape_processes = {}
+active_contact_cancel_flags = set()
+runtime_lock = threading.Lock()
+
+UNIFIED_OUTPUT_COLUMNS = [
+    'source_platform',
+    'source_job_id',
+    'scrape_run_at',
+    'url',
+    'title',
+    'company',
+    'company_website',
+    'date',
+    'location',
+    'salary_info',
+    'description',
+    'keywords',
+    'hiring_type',
+    'location_filter',
+]
+
+
+def normalize_output_csv(csv_path: str, platform_name: str, job_keywords: str, job_location: str) -> int:
+    """Normalize scraper-specific CSV columns into one unified output schema."""
+    df = pd.read_csv(csv_path)
+
+    if 'source_platform' not in df.columns:
+        df['source_platform'] = platform_name
+
+    # Normalize platform-specific ID fields to source_job_id
+    if 'source_job_id' not in df.columns:
+        df['source_job_id'] = ''
+    if 'wantedly_project_id' in df.columns:
+        df['source_job_id'] = df['source_job_id'].where(df['source_job_id'].astype(str).str.len() > 0, df['wantedly_project_id'])
+    if 'linkedin_job_id' in df.columns:
+        df['source_job_id'] = df['source_job_id'].where(df['source_job_id'].astype(str).str.len() > 0, df['linkedin_job_id'])
+    if 'rubyonremote_job_id' in df.columns:
+        df['source_job_id'] = df['source_job_id'].where(df['source_job_id'].astype(str).str.len() > 0, df['rubyonremote_job_id'])
+
+    # Normalize company naming
+    if 'company' not in df.columns:
+        if 'company_name' in df.columns:
+            df['company'] = df['company_name']
+        else:
+            df['company'] = ''
+
+    # Normalize date/location naming
+    if 'date' not in df.columns:
+        if 'posted_date' in df.columns:
+            df['date'] = df['posted_date']
+        else:
+            df['date'] = ''
+
+    if 'location' not in df.columns:
+        if 'job_location' in df.columns:
+            df['location'] = df['job_location']
+        elif 'location_filter' in df.columns:
+            df['location'] = df['location_filter']
+        else:
+            df['location'] = ''
+
+    # Fill optional metadata defaults
+    if 'keywords' not in df.columns:
+        df['keywords'] = job_keywords or ''
+    else:
+        df['keywords'] = df['keywords'].fillna(job_keywords or '')
+
+    if 'hiring_type' not in df.columns:
+        df['hiring_type'] = ''
+
+    if 'location_filter' not in df.columns:
+        df['location_filter'] = job_location or ''
+    else:
+        df['location_filter'] = df['location_filter'].fillna(job_location or '')
+
+    if 'salary_info' not in df.columns:
+        df['salary_info'] = ''
+
+    if 'company_website' not in df.columns:
+        df['company_website'] = ''
+
+    if 'url' not in df.columns:
+        df['url'] = ''
+
+    if 'title' not in df.columns:
+        df['title'] = ''
+
+    if 'description' not in df.columns:
+        df['description'] = ''
+
+    if 'scrape_run_at' not in df.columns:
+        df['scrape_run_at'] = datetime.now().isoformat()
+
+    for col in UNIFIED_OUTPUT_COLUMNS:
+        if col not in df.columns:
+            df[col] = ''
+
+    normalized = df[UNIFIED_OUTPUT_COLUMNS].copy()
+    normalized.to_csv(csv_path, index=False)
+    return len(normalized)
 
 # --- Helpers ---
 def cleanup_old_files():
@@ -33,6 +143,16 @@ def cleanup_old_files():
                 try: os.remove(filepath)
                 except: pass
     except: pass
+
+
+def safe_remove_file(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        if os.path.exists(path) and os.path.isfile(path):
+            os.remove(path)
+    except Exception:
+        pass
 
 def start_cleanup_thread():
     def cleanup_loop():
@@ -49,38 +169,23 @@ def index():
 
 @app.route('/api/scrape', methods=['POST'])
 def start_scrape():
-    global job_counter
     data = request.json
-    
-    with job_lock:
-        job_counter += 1
-        job_id = job_counter
-    
     file_id = str(uuid.uuid4())[:8]
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    
-    # Initialize Job State
-    scraping_jobs[job_id] = {
-        'status': 'running',
-        'progress': 'Initializing...',
+
+    job_id = db.create_scrape_job({
         'platform': data.get('platform', 'linkedin'),
         'job_keywords': data.get('job_keywords', ''),
         'job_location': data.get('job_location', ''),
         'file_id': file_id,
         'timestamp': timestamp,
-        'started_at': datetime.now().isoformat(), # Fixed date issue
-        'jobs_found': 0,
-        'jobs_processed': 0,
-        'results_count': 0
-    }
-    
-    thread = threading.Thread(
-        target=run_scraper,
-        args=(job_id, data)
-    )
+        'started_at': datetime.now(),
+    })
+
+    thread = threading.Thread(target=run_scraper, args=(job_id, data))
     thread.daemon = True
     thread.start()
-    
+
     return jsonify({'job_id': job_id, 'status': 'started'})
 
 def run_scraper(job_id, data):
@@ -88,7 +193,8 @@ def run_scraper(job_id, data):
     platform_name = data.get('platform')
     browser = data.get('browser') or os.getenv('BROWSER') or ('brave' if platform.system() == 'Darwin' else 'chrome')
     brave_binary_path = data.get('brave_binary_path') or os.getenv('BRAVE_BINARY_PATH', '')
-    run_timestamp = scraping_jobs.get(job_id, {}).get('started_at') or datetime.now().isoformat()
+    job = db.get_scrape_job(job_id)
+    run_timestamp = (job or {}).get('started_at', '') or datetime.now().isoformat()
     
     try:
         # 1. Select Template
@@ -127,7 +233,7 @@ def run_scraper(job_id, data):
             f.write(content)
             
         # 3. Execute with UNBUFFERED Output (-u)
-        scraping_jobs[job_id]['progress'] = f'Launching browser ({browser})...'
+        db.update_scrape_job(job_id, progress=f'Launching browser ({browser})...')
         
         process = subprocess.Popen(
             [sys.executable, '-u', temp_script], # Keep child process in same env as Flask app
@@ -137,10 +243,13 @@ def run_scraper(job_id, data):
             bufsize=1, # Line buffered
             universal_newlines=True
         )
+        with runtime_lock:
+            active_scrape_processes[job_id] = process
         
         # 4. Monitor Output Loop
         start_time = time.time()
         timeout = 900 # 15 minutes max
+        local_jobs_processed = 0
         
         while True:
             # Check for timeout
@@ -162,39 +271,39 @@ def run_scraper(job_id, data):
                 
                 # 1. Page Loading
                 if "Scraping Page" in line:
-                    scraping_jobs[job_id]['progress'] = line
+                    db.update_scrape_job(job_id, progress=line)
                 elif "Loading jobs" in line:
-                    scraping_jobs[job_id]['progress'] = "Loading job list..."
+                    db.update_scrape_job(job_id, progress="Loading job list...")
                 elif "Loaded" in line and "jobs" in line:
                     # Example: "Loaded 15 jobs..."
-                    scraping_jobs[job_id]['progress'] = line
+                    db.update_scrape_job(job_id, progress=line)
 
                 # 2. Processing Individual Jobs
                 # LinkedIn: "[5/25] Processing ID: 123"
                 elif "Processing ID" in line:
-                    scraping_jobs[job_id]['progress'] = f"Analyzing job..."
+                    db.update_scrape_job(job_id, progress="Analyzing job...")
                 
                 # 3. Successful Scrape or Skip
                 # LinkedIn: "   -> Scraped: Senior Engineer at Company"
                 # Ruby: "Scraped: Senior Engineer"
                 # Skip: "   -> Skipped duplicate: Title at Company"
                 elif "Scraped:" in line:
-                    scraping_jobs[job_id]['jobs_processed'] += 1
-                    count = scraping_jobs[job_id]['jobs_processed']
+                    local_jobs_processed += 1
                     # Extract just the title (before " at ")
                     after_colon = line.split(":", 1)[1].strip()
                     title = after_colon.split(" at ")[0][:30] if " at " in after_colon else after_colon[:30]
-                    scraping_jobs[job_id]['progress'] = f"Saved: {title}..."
+                    db.update_scrape_job(job_id, jobs_processed=local_jobs_processed, progress=f"Saved: {title}...")
                 elif "Skipped duplicate:" in line:
-                    scraping_jobs[job_id]['progress'] = "Skipping duplicate..."
+                    db.update_scrape_job(job_id, progress="Skipping duplicate...")
 
         # 5. Check Exit Code
         stderr_output = process.stderr.read()
+        latest_job = db.get_scrape_job(job_id) or {}
+        if latest_job.get('status') == 'cancelled':
+            db.update_scrape_job(job_id, progress='Cancelled by user.')
+            return
         
         if process.returncode == 0:
-            scraping_jobs[job_id]['status'] = 'completed'
-            scraping_jobs[job_id]['progress'] = 'Completed successfully.'
-            
             # Move File logic
             # Determine expected filename based on scraper logic
             clean_kw = data.get('job_keywords', '').replace(' ', '_').replace('/', '-')
@@ -208,186 +317,266 @@ def run_scraper(job_id, data):
             if os.path.exists(old_name):
                 import shutil
                 shutil.move(old_name, new_path)
-                scraping_jobs[job_id]['output_file'] = new_path
-                scraping_jobs[job_id]['output_filename'] = new_name
-                # Count
-                with open(new_path, 'r', encoding='utf-8') as f:
-                    scraping_jobs[job_id]['results_count'] = sum(1 for _ in f) - 1
+                results_count = normalize_output_csv(
+                    new_path,
+                    platform_name=platform_name,
+                    job_keywords=data.get('job_keywords', ''),
+                    job_location=data.get('job_location', ''),
+                )
+                db.update_scrape_job(job_id,
+                    status='completed',
+                    progress='Completed successfully.',
+                    output_file=new_path,
+                    output_filename=new_name,
+                    results_count=results_count,
+                )
             else:
                 # If file not found, try finding ANY csv created recently (fallback)
-                scraping_jobs[job_id]['error'] = "Output file could not be renamed automatically."
+                db.update_scrape_job(job_id,
+                    status='completed',
+                    progress='Completed successfully.',
+                    error='Output file could not be renamed automatically.',
+                )
                 
         else:
             raise Exception(f"Script Error: {stderr_output}")
 
     except Exception as e:
-        scraping_jobs[job_id]['status'] = 'error'
-        scraping_jobs[job_id]['error'] = str(e)
-        print(f"[JOB {job_id} ERROR] {e}")
+        latest_job = db.get_scrape_job(job_id) or {}
+        if latest_job.get('status') == 'cancelled':
+            db.update_scrape_job(job_id, progress='Cancelled by user.')
+            print(f"[JOB {job_id}] Cancelled")
+        else:
+            db.update_scrape_job(job_id, status='error', error=str(e))
+            print(f"[JOB {job_id} ERROR] {e}")
     
     finally:
+        with runtime_lock:
+            active_scrape_processes.pop(job_id, None)
         if temp_script and os.path.exists(temp_script):
             try: os.remove(temp_script)
             except: pass
 
+
+@app.route('/api/cancel/<int:job_id>', methods=['POST'])
+def cancel_scrape_job(job_id):
+    job = db.get_scrape_job(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    if job.get('status') != 'running':
+        return jsonify({'error': f"Job is not running (status: {job.get('status')})"}), 400
+
+    db.update_scrape_job(job_id, status='cancelled', progress='Cancelling...')
+    with runtime_lock:
+        process = active_scrape_processes.get(job_id)
+    if process and process.poll() is None:
+        try:
+            process.terminate()
+        except Exception:
+            pass
+    return jsonify({'status': 'cancelled'})
+
+
+@app.route('/api/jobs/<int:job_id>', methods=['DELETE'])
+def delete_scrape_job(job_id):
+    job = db.get_scrape_job(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    if job.get('status') == 'running':
+        return jsonify({'error': 'Cancel the running job before deleting it'}), 400
+
+    related_contact_jobs = [
+        contact_job for contact_job in db.list_contact_jobs()
+        if contact_job.get('source_scraping_job') == job_id
+    ]
+
+    for contact_job in related_contact_jobs:
+        if contact_job.get('status') == 'running':
+            return jsonify({'error': 'Cancel the running contact job before deleting this scrape record'}), 400
+
+    safe_remove_file(job.get('output_file'))
+    for contact_job in related_contact_jobs:
+        safe_remove_file(contact_job.get('output_csv'))
+
+    db.delete_contact_jobs_for_scrape(job_id)
+    db.delete_scrape_job(job_id)
+    return jsonify({'status': 'deleted'})
+
 @app.route('/api/status/<int:job_id>')
 def get_status(job_id):
-    return jsonify(scraping_jobs.get(job_id, {'error': 'Not found'}))
+    job = db.get_scrape_job(job_id)
+    if not job:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify(job)
 
 @app.route('/api/download/<int:job_id>')
 def download_results(job_id):
-    job = scraping_jobs.get(job_id)
-    if not job or not job.get('output_file'): return jsonify({'error': 'File not found'}), 404
-    
-    # Use the stored filename or extract from path
+    job = db.get_scrape_job(job_id)
+    if not job or not job.get('output_file'):
+        return jsonify({'error': 'File not found'}), 404
     download_name = job.get('output_filename') or os.path.basename(job['output_file'])
     return send_file(job['output_file'], as_attachment=True, download_name=download_name)
 
 @app.route('/api/jobs')
 def list_jobs():
-    # Build a lookup of latest contact job by source scraping job
+    jobs = db.list_scrape_jobs()
+    contacts = db.list_contact_jobs()
+
     latest_contact_by_scrape = {}
-    for cid, cjob in sorted(contact_jobs.items(), key=lambda item: item[0]):
+    for cjob in contacts:
         src = cjob.get('source_scraping_job')
         if src is not None:
             latest_contact_by_scrape[src] = {
-                'contact_job_id': cid,
-                'status': cjob.get('status'),
-                'progress': cjob.get('progress'),
-                'started_at': cjob.get('started_at'),
-                'output_csv': cjob.get('output_csv')
+                'contact_job_id': cjob['id'],
+                'status': cjob['status'],
+                'progress': cjob['progress'],
+                'started_at': cjob['started_at'],
+                'output_csv': cjob['output_csv'],
             }
 
     jobs_payload = []
-    for k, v in sorted(scraping_jobs.items(), key=lambda item: item[0], reverse=True):
-        latest_contact = latest_contact_by_scrape.get(k)
-        scrape_status = str(v.get('status', '')).lower()
+    for job in jobs:
+        latest_contact = latest_contact_by_scrape.get(job['id'])
         jobs_payload.append({
-            **v,
-            'job_id': k,
-            'can_find_contacts': scrape_status == 'completed',
-            'latest_contact_job': latest_contact
+            **job,
+            'job_id': job['id'],
+            'can_find_contacts': job['status'] == 'completed',
+            'latest_contact_job': latest_contact,
         })
 
     return jsonify({'jobs': jobs_payload})
 
 # --- CEO/CTO Contact Finder Integration ---
-contact_jobs = {}  # Track contact finding jobs
-contact_counter = 0
-contact_lock = threading.Lock()
 
 @app.route('/api/find-contacts/<int:job_id>', methods=['POST'])
 def find_contacts_for_job(job_id):
-    """
-    Find CEO/CTO contacts for a completed scraping job
-    """
-    global contact_counter
-    
-    job = scraping_jobs.get(job_id)
+    job = db.get_scrape_job(job_id)
     if not job:
         return jsonify({'error': 'Scraping job not found'}), 404
-    
+
     if job['status'] != 'completed':
         return jsonify({'error': f'Scraping job not completed (status: {job["status"]})'}), 400
-    
+
     input_csv = job.get('output_file')
     if not input_csv or not os.path.exists(input_csv):
         return jsonify({'error': 'Scraping output CSV not found'}), 404
-    
-    with contact_lock:
-        contact_counter += 1
-        contact_job_id = contact_counter
-    
-    # Initialize contact job
-    contact_jobs[contact_job_id] = {
-        'status': 'running',
-        'progress': 'Initializing contact finder...',
+
+    # Ensure schema is normalized before contact extraction (handles legacy CSVs too).
+    normalize_output_csv(
+        input_csv,
+        platform_name=job.get('platform', ''),
+        job_keywords=job.get('job_keywords', ''),
+        job_location=job.get('job_location', ''),
+    )
+
+    contact_job_id = db.create_contact_job({
         'source_scraping_job': job_id,
         'input_csv': input_csv,
-        'output_csv': None,
-        'started_at': datetime.now().isoformat(),
-        'contacts_found': 0,
-        'total_companies': 0,
-        'api_calls': 0,
-        'error': None
-    }
-    
-    # Start contact finding in background
-    thread = threading.Thread(
-        target=run_contact_finder,
-        args=(contact_job_id, input_csv)
-    )
+        'started_at': datetime.now(),
+    })
+
+    thread = threading.Thread(target=run_contact_finder, args=(contact_job_id, input_csv))
     thread.daemon = True
     thread.start()
-    
+
     return jsonify({'contact_job_id': contact_job_id, 'status': 'started'})
 
 def run_contact_finder(contact_job_id, input_csv):
-    """
-    Run the contact finder agent in background
-    """
     try:
-        from contact_extractor import ContactExtractor
-        
-        contact_jobs[contact_job_id]['progress'] = 'Loading CSV...'
-        
-        extractor = ContactExtractor(input_csv, OUTPUT_DIR)
-        
-        contact_jobs[contact_job_id]['progress'] = 'Extracting executive contacts...'
-        
+        from contact_extractor import ContactExtractor, ContactExtractionCancelled
+
+        db.update_contact_job(contact_job_id, progress='Loading CSV...')
+        extractor = ContactExtractor(
+            input_csv,
+            OUTPUT_DIR,
+            should_cancel=lambda: contact_job_id in active_contact_cancel_flags,
+        )
+
+        db.update_contact_job(contact_job_id, progress='Extracting executive contacts...')
+
         # Extract contacts (set a reasonable sample if too large)
         import pandas as pd
         df = pd.read_csv(input_csv)
         sample_size = min(100, len(df))  # Limit to 100 companies for API rate limits
-        
+
         enriched_records = extractor.extract_contacts(sample_size=sample_size)
-        
+
+        if contact_job_id in active_contact_cancel_flags:
+            db.update_contact_job(contact_job_id, status='cancelled', progress='Cancelled by user.')
+            return
+
         if enriched_records:
-            contact_jobs[contact_job_id]['progress'] = 'Saving enriched CSV...'
+            db.update_contact_job(contact_job_id, progress='Saving enriched CSV...')
             output_path = extractor.save_enriched_csv(enriched_records)
-            
-            contact_jobs[contact_job_id]['output_csv'] = output_path
-            contact_jobs[contact_job_id]['contacts_found'] = extractor.stats['contacts_found']
-            contact_jobs[contact_job_id]['total_companies'] = extractor.stats['total_companies']
-            contact_jobs[contact_job_id]['api_calls'] = extractor.stats['api_calls']
-            contact_jobs[contact_job_id]['status'] = 'completed'
-            contact_jobs[contact_job_id]['progress'] = 'Completed'
+            db.update_contact_job(contact_job_id,
+                output_csv=output_path,
+                contacts_found=extractor.stats['contacts_found'],
+                total_companies=extractor.stats['total_companies'],
+                api_calls=extractor.stats['api_calls'],
+                status='completed',
+                progress='Completed',
+            )
         else:
-            contact_jobs[contact_job_id]['status'] = 'error'
-            contact_jobs[contact_job_id]['error'] = 'No records were enriched'
-    
+            db.update_contact_job(contact_job_id, status='error', error='No records were enriched')
+
+    except ContactExtractionCancelled:
+        db.update_contact_job(contact_job_id, status='cancelled', progress='Cancelled by user.')
+
     except Exception as e:
-        contact_jobs[contact_job_id]['status'] = 'error'
-        contact_jobs[contact_job_id]['error'] = str(e)
+        db.update_contact_job(contact_job_id, status='error', error=str(e))
         print(f"[CONTACT JOB {contact_job_id} ERROR] {e}")
+    finally:
+        with runtime_lock:
+            active_contact_cancel_flags.discard(contact_job_id)
 
 @app.route('/api/find-contacts/status/<int:contact_job_id>')
 def get_contact_job_status(contact_job_id):
-    """
-    Get status of a contact finding job
-    """
-    job = contact_jobs.get(contact_job_id)
+    job = db.get_contact_job(contact_job_id)
     if not job:
         return jsonify({'error': 'Contact job not found'}), 404
     return jsonify(job)
 
 @app.route('/api/find-contacts/download/<int:contact_job_id>')
 def download_contact_results(contact_job_id):
-    """
-    Download enriched CSV with contact information
-    """
-    job = contact_jobs.get(contact_job_id)
+    job = db.get_contact_job(contact_job_id)
     if not job or not job.get('output_csv'):
         return jsonify({'error': 'Enriched CSV not found'}), 404
-    
+
     output_csv = job['output_csv']
     if not os.path.exists(output_csv):
         return jsonify({'error': 'File not found'}), 404
-    
-    download_name = os.path.basename(output_csv)
-    return send_file(output_csv, as_attachment=True, download_name=download_name)
+
+    return send_file(output_csv, as_attachment=True, download_name=os.path.basename(output_csv))
+
+
+@app.route('/api/find-contacts/cancel/<int:contact_job_id>', methods=['POST'])
+def cancel_contact_job(contact_job_id):
+    job = db.get_contact_job(contact_job_id)
+    if not job:
+        return jsonify({'error': 'Contact job not found'}), 404
+    if job.get('status') != 'running':
+        return jsonify({'error': f"Contact job is not running (status: {job.get('status')})"}), 400
+
+    with runtime_lock:
+        active_contact_cancel_flags.add(contact_job_id)
+    db.update_contact_job(contact_job_id, status='cancelled', progress='Cancelling...')
+    return jsonify({'status': 'cancelled'})
+
+
+@app.route('/api/find-contacts/<int:contact_job_id>', methods=['DELETE'])
+def delete_contact_job(contact_job_id):
+    job = db.get_contact_job(contact_job_id)
+    if not job:
+        return jsonify({'error': 'Contact job not found'}), 404
+    if job.get('status') == 'running':
+        return jsonify({'error': 'Cancel the running contact job before deleting it'}), 400
+
+    safe_remove_file(job.get('output_csv'))
+    db.delete_contact_job(contact_job_id)
+    return jsonify({'status': 'deleted'})
 
 if __name__ == '__main__':
+    db.init()
     start_cleanup_thread()
     host = os.getenv('HOST', '127.0.0.1')
     port = int(os.getenv('PORT', '5050'))

@@ -31,6 +31,16 @@ body {
 
 h1 { margin-top: 0; }
 
+.platform-note {
+    margin-bottom: 1rem;
+    padding: 0.85rem 1rem;
+    border-radius: 10px;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border: 1px solid #bfdbfe;
+    font-size: 0.95rem;
+}
+
 .form-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -38,6 +48,40 @@ h1 { margin-top: 0; }
 }
 
 .full { grid-column: span 2; }
+
+.form-block {
+    min-width: 0;
+}
+
+.form-section-label {
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #475569;
+    padding-top: 0.25rem;
+    border-top: 1px solid var(--border);
+    margin-top: 0.25rem;
+}
+
+.form-section-copy {
+    color: #64748b;
+    font-size: 0.95rem;
+    padding: 0.75rem 1rem;
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    background: #f8fafc;
+}
+
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    margin-top: 1.7rem;
+}
+
+.is-hidden {
+    display: none !important;
+}
 
 input, select {
     width: 100%;
@@ -62,8 +106,27 @@ input, select {
 .btn:disabled { opacity: 0.7; }
 .btn-success { background: var(--success); width: auto; padding: 0.5rem 1rem; margin-top: 0; }
 .btn-secondary { background: #0f766e; color: #ffffff; width: auto; padding: 0.5rem 1rem; margin-top: 0; }
+.btn-danger { background: #dc2626; color: #ffffff; width: auto; padding: 0.5rem 1rem; margin-top: 0; }
 
-#downloadArea, #contactDownloadArea {
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.section-note {
+    margin: 0.5rem 0 0.75rem;
+    color: #64748b;
+    font-size: 0.9rem;
+}
+
+#refreshHistoryBtn {
+    padding: 0.45rem 0.75rem;
+    font-size: 0.85rem;
+}
+
+#downloadArea, #contactDownloadArea, #cancelArea, #contactCancelArea {
     flex-wrap: wrap;
     gap: 8px;
     align-items: center;
@@ -88,6 +151,7 @@ input, select {
 .status-badge.running {color: #1e40af; }
 .status-badge.completed {color: #065f46; }
 .status-badge.error { color: #991b1b; }
+.status-badge.cancelled { color: #9a3412; }
 
 .progress-bar {
     height: 6px;
@@ -117,9 +181,61 @@ input, select {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 0.75rem;
     padding: 1rem 0;
     border-bottom: 1px solid var(--border);
 }
 
 .job-info h4 { margin: 0 0 4px 0; }
 .meta { font-size: 13px; color: #64748b; }
+
+.job-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.btn-icon {
+    text-decoration: none;
+    padding: 0.5rem 0.75rem;
+}
+
+.empty-state {
+    color: #94a3b8;
+    text-align: center;
+    padding: 1rem 0;
+}
+
+@media (max-width: 760px) {
+    body {
+        padding: 1rem;
+    }
+
+    .card {
+        padding: 1rem;
+    }
+
+    .form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .full {
+        grid-column: span 1;
+    }
+
+    .checkbox-row {
+        margin-top: 0.25rem;
+    }
+
+    .job-item {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .job-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+}

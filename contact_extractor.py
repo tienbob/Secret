@@ -27,12 +27,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class ContactExtractionCancelled(Exception):
+    """Raised when a contact extraction job is cancelled by user request."""
+
+
 class ContactExtractor:
     """
     Main orchestrator for extracting executive contacts from job listings
     """
     
-    def __init__(self, input_csv_path: str, output_dir: str = "scraper_outputs"):
+    def __init__(self, input_csv_path: str, output_dir: str = "scraper_outputs", should_cancel=None):
         """
         Initialize the contact extractor
         
@@ -43,6 +47,7 @@ class ContactExtractor:
         self.input_csv_path = input_csv_path
         self.output_dir = output_dir
         self.finder = ExecutiveContactFinder()
+        self.should_cancel = should_cancel
         self.cache = {}  # In-process cache to avoid duplicate searches
         self.stats = {
             "total_companies": 0,
@@ -74,6 +79,21 @@ class ContactExtractor:
             "search_confidence": 0.0,
             "search_reason": reason,
         }
+
+    @staticmethod
+    def _resolve_company_column(df: pd.DataFrame) -> Optional[str]:
+        """Return the best company-name column from known schema variants."""
+        candidates = [
+            "company",
+            "company_name",
+            "employer",
+            "organization",
+            "company_slug",
+        ]
+        for col in candidates:
+            if col in df.columns:
+                return col
+        return None
     
     def extract_contacts(self, sample_size: Optional[int] = None) -> List[Dict[str, Any]]:
         """
@@ -86,6 +106,9 @@ class ContactExtractor:
             List of enriched company records with contact information
         """
         logger.info(f"Reading CSV from: {self.input_csv_path}")
+
+        if callable(self.should_cancel) and self.should_cancel():
+            raise ContactExtractionCancelled()
         
         # Read the input CSV
         try:
@@ -105,8 +128,14 @@ class ContactExtractor:
             df = df.head(sample_size)
             logger.info(f"Processing sample of {sample_size} records")
         
-        # Determine source company column
-        company_col = 'company' if 'company' in df.columns else df.columns[0]
+        # Determine source company column from known schema variants.
+        company_col = self._resolve_company_column(df)
+        if not company_col:
+            logger.error(
+                "No company name column found. Expected one of: company, company_name, employer, organization, company_slug"
+            )
+            return []
+        logger.info("Using company column: %s", company_col)
 
         # Keep all unique companies for stats, then filter processable values.
         companies = (
@@ -140,6 +169,8 @@ class ContactExtractor:
             self.stats["contacts_not_found"] += 1
 
         for idx, company_row in processable_companies.iterrows():
+            if callable(self.should_cancel) and self.should_cancel():
+                raise ContactExtractionCancelled()
             company_name = company_row['company']
             
             # Check cache first
@@ -163,6 +194,8 @@ class ContactExtractor:
             
         # Enrich every original row using cached company results so no rows are dropped.
         for _, row in df.iterrows():
+            if callable(self.should_cancel) and self.should_cancel():
+                raise ContactExtractionCancelled()
             record = row.to_dict()
             company_name = record.get(company_col, "")
             contact_data = self.cache.get(
@@ -184,11 +217,33 @@ class ContactExtractor:
         """Convert an enriched row to a compact, analytics-friendly schema."""
         ceo = record.get("ceo", {}) or {}
         cto = record.get("cto", {}) or {}
+
+        source_job_id = (
+            record.get("wantedly_project_id")
+            or record.get("linkedin_job_id")
+            or record.get("rubyonremote_job_id")
+            or ""
+        )
+
+        source_platform = record.get("source_platform", "")
+        if not source_platform:
+            if record.get("wantedly_project_id"):
+                source_platform = "wantedly"
+            elif record.get("linkedin_job_id"):
+                source_platform = "linkedin"
+            elif record.get("rubyonremote_job_id"):
+                source_platform = "rubyonremote"
+
         return {
-            "wantedly_project_id": record.get("wantedly_project_id", ""),
+            "source_platform": source_platform,
+            "source_job_id": source_job_id,
+            "scrape_run_at": record.get("scrape_run_at", ""),
             "url": record.get("url", ""),
             "company": record.get("company", record.get("company_name", "")),
+            "company_website": record.get("company_website", ""),
             "title": record.get("title", ""),
+            "date": record.get("date", record.get("posted_date", "")),
+            "location": record.get("location", record.get("job_location", record.get("location_filter", ""))),
             "ceo_name": ceo.get("name", ""),
             "ceo_title": ceo.get("title", ""),
             "ceo_email": ceo.get("email", ""),

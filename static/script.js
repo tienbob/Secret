@@ -2,13 +2,243 @@ let currentJobId = null;
 let pollInterval = null;
 let currentContactJobId = null;
 let contactPollInterval = null;
+let lastJobsSnapshot = [];
 
 function formatDate(isoString) {
     if (!isoString) return '';
     return new Date(isoString).toLocaleString();
 }
 
+function updatePlatformForm() {
+    const platform = document.getElementById('platform').value;
+    const hint = document.getElementById('platformHint');
+    const blocks = document.querySelectorAll('.form-block');
+
+    blocks.forEach((block) => {
+        const isShared = block.classList.contains('form-block-shared');
+        const isLinkedIn = block.classList.contains('form-block-linkedin');
+        const isWantedly = block.classList.contains('form-block-wantedly');
+        const isRubyOnRemote = block.classList.contains('form-block-rubyonremote');
+
+        let visible = isShared;
+        if (platform === 'linkedin' && isLinkedIn) visible = true;
+        if (platform === 'wantedly' && isWantedly) visible = true;
+        if (platform === 'rubyonremote' && isRubyOnRemote) visible = true;
+
+        block.classList.toggle('is-hidden', !visible);
+    });
+}
+
+async function parseApiResponse(res) {
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (contentType.includes('application/json')) {
+        const data = await res.json();
+        return { ok: res.ok, status: res.status, data };
+    }
+
+    const text = await res.text();
+    const compact = text.replace(/\s+/g, ' ').trim();
+    return {
+        ok: res.ok,
+        status: res.status,
+        data: {
+            error: compact ? `HTTP ${res.status}: ${compact.slice(0, 180)}` : `HTTP ${res.status}`,
+        },
+    };
+}
+
+function showStatusPanel() {
+    document.getElementById('statusPanel').style.display = 'block';
+}
+
+function showContactStatusPanel() {
+    document.getElementById('contactStatusPanel').style.display = 'block';
+}
+
+function hideStatusPanel() {
+    document.getElementById('statusPanel').style.display = 'none';
+}
+
+function hideContactStatusPanel() {
+    document.getElementById('contactStatusPanel').style.display = 'none';
+}
+
+function setScrapeTerminalUI(status, jobId) {
+    const badge = document.getElementById('statusBadge');
+    const fill = document.getElementById('progressFill');
+    const downloadArea = document.getElementById('downloadArea');
+    const cancelArea = document.getElementById('cancelArea');
+    const findContactsBtn = document.getElementById('findContactsBtn');
+
+    fill.classList.remove('pulse');
+    badge.className = `status-badge ${status.status}`;
+    badge.innerText = status.status;
+    document.getElementById('statusText').innerText = status.progress || status.error || status.status;
+    document.getElementById('statusRunAt').innerText = status.started_at ? `Run time: ${formatDate(status.started_at)}` : '';
+
+    if (status.status === 'completed') {
+        cancelArea.style.display = 'none';
+        fill.style.width = '100%';
+        fill.style.backgroundColor = 'var(--primary)';
+        downloadArea.style.display = 'flex';
+        document.getElementById('downloadBtn').onclick = () => window.location.href = `/api/download/${jobId}`;
+        findContactsBtn.style.display = 'inline-block';
+        findContactsBtn.onclick = () => startContactFinder(jobId);
+    } else if (status.status === 'error') {
+        cancelArea.style.display = 'none';
+        fill.style.backgroundColor = 'var(--error)';
+    } else if (status.status === 'cancelled') {
+        cancelArea.style.display = 'none';
+        fill.style.backgroundColor = 'var(--error)';
+        downloadArea.style.display = 'none';
+    }
+
+    document.getElementById('startBtn').disabled = false;
+    document.getElementById('startBtn').innerText = 'Start Scraping';
+}
+
+function setContactTerminalUI(status, contactJobId) {
+    const badge = document.getElementById('contactStatusBadge');
+    const fill = document.getElementById('contactProgressFill');
+    const findContactsBtn = document.getElementById('findContactsBtn');
+    const contactCancelArea = document.getElementById('contactCancelArea');
+
+    badge.className = `status-badge ${status.status}`;
+    badge.innerText = status.status;
+    fill.classList.remove('pulse');
+    document.getElementById('contactStatusText').innerText = status.progress || status.error || status.status;
+
+    if (status.status === 'completed') {
+        contactCancelArea.style.display = 'none';
+        fill.style.width = '100%';
+        fill.style.backgroundColor = 'var(--primary)';
+        if (findContactsBtn) findContactsBtn.style.display = 'none';
+        document.getElementById('contactDownloadArea').style.display = 'flex';
+        document.getElementById('contactDownloadBtn').onclick = () => {
+            window.location.href = `/api/find-contacts/download/${contactJobId}`;
+        };
+
+        if (status.contacts_found !== undefined && status.total_companies !== undefined) {
+            document.getElementById('contactStatusText').innerText =
+                `Completed: ${status.contacts_found}/${status.total_companies} companies with contacts.`;
+        }
+    } else if (status.status === 'error') {
+        contactCancelArea.style.display = 'none';
+        fill.style.backgroundColor = 'var(--error)';
+    } else if (status.status === 'cancelled') {
+        contactCancelArea.style.display = 'none';
+        fill.style.backgroundColor = 'var(--error)';
+        document.getElementById('contactDownloadArea').style.display = 'none';
+    }
+}
+
+async function cancelCurrentScrape() {
+    if (!currentJobId) return;
+    try {
+        const jobId = currentJobId;
+        const res = await fetch(`/api/cancel/${currentJobId}`, { method: 'POST' });
+        const parsed = await parseApiResponse(res);
+        if (!parsed.ok) throw new Error(parsed.data.error || 'Cancel failed');
+        if (pollInterval) clearInterval(pollInterval);
+        currentJobId = null;
+        hideStatusPanel();
+        await deleteScrapeRecord(jobId, true);
+        document.getElementById('statusText').innerText = 'Cancelling...';
+        loadHistory();
+    } catch (err) {
+        alert(`Cancel failed: ${err.message || err}`);
+    }
+}
+
+async function cancelContactJob(contactJobId = null) {
+    const targetId = contactJobId || currentContactJobId;
+    if (!targetId) return;
+    try {
+        const res = await fetch(`/api/find-contacts/cancel/${targetId}`, { method: 'POST' });
+        const parsed = await parseApiResponse(res);
+        if (!parsed.ok) throw new Error(parsed.data.error || 'Cancel failed');
+        if (contactPollInterval) clearInterval(contactPollInterval);
+        if (String(currentContactJobId) === String(targetId)) {
+            currentContactJobId = null;
+            hideContactStatusPanel();
+        }
+        await deleteContactRecord(targetId, true);
+        document.getElementById('contactStatusText').innerText = 'Cancelling...';
+        loadHistory();
+    } catch (err) {
+        alert(`Cancel contact failed: ${err.message || err}`);
+    }
+}
+
+async function deleteScrapeRecord(jobId, silent = false) {
+    const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+    const parsed = await parseApiResponse(res);
+    if (!parsed.ok) {
+        if (!silent) throw new Error(parsed.data.error || 'Delete failed');
+        return false;
+    }
+    if (String(currentJobId) === String(jobId)) {
+        currentJobId = null;
+        hideStatusPanel();
+    }
+    return true;
+}
+
+async function deleteContactRecord(contactJobId, silent = false) {
+    const res = await fetch(`/api/find-contacts/${contactJobId}`, { method: 'DELETE' });
+    const parsed = await parseApiResponse(res);
+    if (!parsed.ok) {
+        if (!silent) throw new Error(parsed.data.error || 'Delete failed');
+        return false;
+    }
+    if (String(currentContactJobId) === String(contactJobId)) {
+        currentContactJobId = null;
+        hideContactStatusPanel();
+    }
+    return true;
+}
+
+function hydrateCurrentPanels(jobs) {
+    const runningScrape = jobs.find((j) => j.status === 'running');
+    const runningContact = jobs
+        .map((j) => ({ jobId: j.job_id, contact: j.latest_contact_job }))
+        .find((entry) => entry.contact && entry.contact.status === 'running');
+
+    if (!currentJobId && runningScrape) {
+        currentJobId = runningScrape.job_id;
+        showStatusPanel();
+        document.getElementById('cancelArea').style.display = 'flex';
+        document.getElementById('startBtn').disabled = true;
+        document.getElementById('startBtn').innerText = 'Running...';
+        startPolling();
+    }
+
+    if (!currentContactJobId && runningContact) {
+        currentContactJobId = runningContact.contact.contact_job_id;
+        showContactStatusPanel();
+        document.getElementById('contactCancelArea').style.display = 'flex';
+        document.getElementById('contactProgressFill').classList.add('pulse');
+        startContactPolling();
+    }
+
+    if (!currentJobId && jobs.length > 0) {
+        const latest = jobs[0];
+        if (latest.status === 'completed' || latest.status === 'error') {
+            currentJobId = latest.job_id;
+            showStatusPanel();
+            setScrapeTerminalUI(latest, latest.job_id);
+
+            if (latest.latest_contact_job && (latest.latest_contact_job.status === 'completed' || latest.latest_contact_job.status === 'error')) {
+                showContactStatusPanel();
+                setContactTerminalUI(latest.latest_contact_job, latest.latest_contact_job.contact_job_id);
+            }
+        }
+    }
+}
+
 // 1. Submit Form
+document.getElementById('platform').addEventListener('change', updatePlatformForm);
+
 document.getElementById('scrapeForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = document.getElementById('startBtn');
@@ -41,7 +271,10 @@ document.getElementById('scrapeForm').addEventListener('submit', async (e) => {
         if (data.job_id) {
             currentJobId = data.job_id;
             startPolling();
-            document.getElementById('statusPanel').style.display = 'block';
+            showStatusPanel();
+            document.getElementById('downloadArea').style.display = 'none';
+            document.getElementById('cancelArea').style.display = 'flex';
+            document.getElementById('cancelBtn').onclick = cancelCurrentScrape;
         }
     } catch (err) {
         alert("Failed to start: " + err);
@@ -74,6 +307,8 @@ async function checkStatus() {
 
         // Visual progress bar
         if (status.status === 'running') {
+            document.getElementById('cancelArea').style.display = 'flex';
+            document.getElementById('cancelBtn').onclick = cancelCurrentScrape;
             if (status.jobs_processed > 0) {
                 // Rough estimate based on max pages
                 const totalEst = 25 * (parseInt(document.getElementById('max_pages').value) || 1);
@@ -84,19 +319,24 @@ async function checkStatus() {
             }
         }
 
-        if (status.status === 'completed' || status.status === 'error') {
+        if (status.status === 'completed' || status.status === 'error' || status.status === 'cancelled') {
             clearInterval(pollInterval);
             document.getElementById('startBtn').disabled = false;
             document.getElementById('startBtn').innerText = "Start Scraping";
             fill.classList.remove('pulse');
+            document.getElementById('cancelArea').style.display = 'none';
             
             if (status.status === 'completed') {
                 fill.style.width = "100%";
+                fill.style.backgroundColor = "var(--primary)";
                 document.getElementById('downloadArea').style.display = 'flex';
                 document.getElementById('downloadBtn').onclick = () => window.location.href = `/api/download/${currentJobId}`;
+                document.getElementById('findContactsBtn').style.display = 'inline-block';
                 document.getElementById('findContactsBtn').onclick = () => startContactFinder(currentJobId);
             } else {
                 fill.style.backgroundColor = "var(--error)";
+                document.getElementById('downloadArea').style.display = 'none';
+                document.getElementById('statusText').innerText = status.progress || status.error || status.status;
             }
             
             loadHistory(); // Refresh history
@@ -109,11 +349,13 @@ async function checkStatus() {
 // 2b. Start Contact Finder for a completed scraping job
 async function startContactFinder(scrapeJobId) {
     try {
-        document.getElementById('contactStatusPanel').style.display = 'block';
+        showContactStatusPanel();
         document.getElementById('contactStatusText').innerText = 'Starting contact finder...';
         document.getElementById('contactStatusBadge').className = 'status-badge running';
         document.getElementById('contactStatusBadge').innerText = 'running';
         document.getElementById('contactDownloadArea').style.display = 'none';
+        document.getElementById('contactCancelArea').style.display = 'flex';
+        document.getElementById('contactCancelBtn').onclick = () => cancelContactJob(currentContactJobId);
         document.getElementById('contactProgressFill').style.width = '15%';
         document.getElementById('contactProgressFill').classList.add('pulse');
 
@@ -164,24 +406,21 @@ async function checkContactStatus() {
             fill.style.width = Math.min((fill.style.width ? parseFloat(fill.style.width) : 15) + 6, 90) + '%';
         }
 
-        if (status.status === 'completed' || status.status === 'error') {
+        if (status.status === 'running') {
+            document.getElementById('contactCancelArea').style.display = 'flex';
+            document.getElementById('contactCancelBtn').onclick = () => cancelContactJob(currentContactJobId);
+        }
+
+        if (status.status === 'completed' || status.status === 'error' || status.status === 'cancelled') {
             clearInterval(contactPollInterval);
             fill.classList.remove('pulse');
+            document.getElementById('contactCancelArea').style.display = 'none';
 
             if (status.status === 'completed') {
-                fill.style.width = '100%';
-                document.getElementById('findContactsBtn').style.display = 'none';
-                document.getElementById('contactDownloadArea').style.display = 'flex';
-                document.getElementById('contactDownloadBtn').onclick = () => {
-                    window.location.href = `/api/find-contacts/download/${currentContactJobId}`;
-                };
-                if (status.contacts_found !== undefined && status.total_companies !== undefined) {
-                    document.getElementById('contactStatusText').innerText =
-                        `Completed: ${status.contacts_found}/${status.total_companies} companies with contacts.`;
-                }
+                setContactTerminalUI(status, currentContactJobId);
             } else {
                 fill.style.backgroundColor = 'var(--error)';
-                document.getElementById('contactStatusText').innerText = status.error || 'Contact finder failed';
+                document.getElementById('contactStatusText').innerText = status.progress || status.error || 'Contact finder failed';
             }
 
             loadHistory();
@@ -197,9 +436,11 @@ async function loadHistory() {
         const res = await fetch('/api/jobs');
         const data = await res.json();
         const container = document.getElementById('jobHistory');
+        lastJobsSnapshot = data.jobs || [];
+        hydrateCurrentPanels(lastJobsSnapshot);
         
         if (!data.jobs || data.jobs.length === 0) {
-            container.innerHTML = "<p style='color: #94a3b8; text-align: center;'>No jobs run yet.</p>";
+            container.innerHTML = "<p class='empty-state'>No jobs run yet.</p>";
             return;
         }
 
@@ -213,11 +454,15 @@ async function loadHistory() {
                         ${job.latest_contact_job ? ` • Contact: ${job.latest_contact_job.status}` : ''}
                     </div>
                 </div>
-                <div>
+                <div class="job-actions">
                     <span class="status-badge ${job.status}">${job.status}</span>
-                    ${job.status === 'completed' ? `<a href="/api/download/${job.job_id}" class="btn btn-success" style="text-decoration:none; margin-left:8px;">⬇</a>` : ''}
-                    ${job.can_find_contacts ? `<button class="btn btn-secondary js-find-contacts" data-job-id="${job.job_id}" style="margin-left:8px; width:auto; padding:0.5rem 0.75rem;">Find Contacts</button>` : ''}
-                    ${job.latest_contact_job && job.latest_contact_job.status === 'completed' ? `<a href="/api/find-contacts/download/${job.latest_contact_job.contact_job_id}" class="btn btn-success" style="text-decoration:none; margin-left:8px;">Contacts ⬇</a>` : ''}
+                    ${job.status === 'completed' ? `<a href="/api/download/${job.job_id}" class="btn btn-success btn-icon">CSV ⬇</a>` : ''}
+                    ${job.status === 'running' ? `<button class="btn btn-danger js-cancel-scrape" data-job-id="${job.job_id}">Cancel</button>` : ''}
+                    ${job.can_find_contacts && (!job.latest_contact_job || job.latest_contact_job.status !== 'running') ? `<button class="btn btn-secondary js-find-contacts" data-job-id="${job.job_id}">Find Contacts</button>` : ''}
+                    ${job.latest_contact_job && job.latest_contact_job.status === 'running' ? `<button class="btn btn-danger js-cancel-contact" data-contact-job-id="${job.latest_contact_job.contact_job_id}">Cancel Contact</button>` : ''}
+                    ${job.latest_contact_job && job.latest_contact_job.status === 'completed' ? `<a href="/api/find-contacts/download/${job.latest_contact_job.contact_job_id}" class="btn btn-success btn-icon">Contacts ⬇</a>` : ''}
+                    ${job.latest_contact_job && job.latest_contact_job.status !== 'running' ? `<button class="btn btn-danger js-delete-contact" data-contact-job-id="${job.latest_contact_job.contact_job_id}">Delete Contact</button>` : ''}
+                    ${job.status !== 'running' ? `<button class="btn btn-danger js-delete-scrape" data-job-id="${job.job_id}">Delete</button>` : ''}
                 </div>
             </div>
         `).join('');
@@ -228,11 +473,71 @@ async function loadHistory() {
                 if (id) startContactFinder(id);
             });
         });
+
+        container.querySelectorAll('.js-cancel-scrape').forEach((btn) => {
+            btn.addEventListener('click', async (e) => {
+                const id = e.currentTarget.getAttribute('data-job-id');
+                if (!id) return;
+                try {
+                    const res = await fetch(`/api/cancel/${id}`, { method: 'POST' });
+                    const parsed = await parseApiResponse(res);
+                    if (!parsed.ok) throw new Error(parsed.data.error || 'Cancel failed');
+                    if (String(currentJobId) === String(id)) {
+                        currentJobId = null;
+                        if (pollInterval) clearInterval(pollInterval);
+                        hideStatusPanel();
+                    }
+                    await deleteScrapeRecord(id, true);
+                    loadHistory();
+                } catch (err) {
+                    alert(`Cancel failed: ${err.message || err}`);
+                }
+            });
+        });
+
+        container.querySelectorAll('.js-cancel-contact').forEach((btn) => {
+            btn.addEventListener('click', async (e) => {
+                const id = e.currentTarget.getAttribute('data-contact-job-id');
+                if (!id) return;
+                await cancelContactJob(id);
+            });
+        });
+
+        container.querySelectorAll('.js-delete-scrape').forEach((btn) => {
+            btn.addEventListener('click', async (e) => {
+                const id = e.currentTarget.getAttribute('data-job-id');
+                if (!id) return;
+                try {
+                    await deleteScrapeRecord(id);
+                    loadHistory();
+                } catch (err) {
+                    alert(`Delete failed: ${err.message || err}`);
+                }
+            });
+        });
+
+        container.querySelectorAll('.js-delete-contact').forEach((btn) => {
+            btn.addEventListener('click', async (e) => {
+                const id = e.currentTarget.getAttribute('data-contact-job-id');
+                if (!id) return;
+                try {
+                    await deleteContactRecord(id);
+                    loadHistory();
+                } catch (err) {
+                    alert(`Delete contact failed: ${err.message || err}`);
+                }
+            });
+        });
     } catch (e) {
         console.error("History Error:", e);
     }
 }
 
+document.getElementById('refreshHistoryBtn').addEventListener('click', () => {
+    loadHistory();
+});
+
 // Auto-refresh history every 5 seconds
 setInterval(loadHistory, 5000);
+updatePlatformForm();
 loadHistory();
