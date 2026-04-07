@@ -3,6 +3,8 @@ import subprocess
 import os
 import threading
 from datetime import datetime
+import io
+import tempfile
 import uuid
 import time
 import re
@@ -52,6 +54,31 @@ UNIFIED_OUTPUT_COLUMNS = [
     'hiring_type',
     'location_filter',
 ]
+
+
+def format_display_date(value) -> str:
+    """Convert timestamps to dd/mm/yyyy for CSV readability."""
+    if value is None:
+        return ''
+
+    text = str(value).strip()
+    if not text:
+        return ''
+
+    for parser in (datetime.fromisoformat,):
+        try:
+            normalized = text.replace('Z', '+00:00')
+            return parser(normalized).strftime('%d/%m/%Y')
+        except ValueError:
+            continue
+
+    for pattern in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(text, pattern).strftime('%d/%m/%Y')
+        except ValueError:
+            continue
+
+    return text
 
 
 def normalize_output_csv(csv_path: str, platform_name: str, job_keywords: str, job_location: str) -> int:
@@ -124,6 +151,7 @@ def normalize_output_csv(csv_path: str, platform_name: str, job_keywords: str, j
 
     if 'scrape_run_at' not in df.columns:
         df['scrape_run_at'] = datetime.now().isoformat()
+    df['scrape_run_at'] = df['scrape_run_at'].apply(format_display_date)
 
     for col in UNIFIED_OUTPUT_COLUMNS:
         if col not in df.columns:
@@ -153,6 +181,20 @@ def safe_remove_file(path: str | None) -> None:
             os.remove(path)
     except Exception:
         pass
+
+
+def read_text_file(path: str) -> str:
+    with open(path, 'r', encoding='utf-8') as handle:
+        return handle.read()
+
+
+def build_csv_download(content: str, filename: str):
+    return send_file(
+        io.BytesIO(content.encode('utf-8')),
+        as_attachment=True,
+        download_name=filename,
+        mimetype='text/csv; charset=utf-8',
+    )
 
 def start_cleanup_thread():
     def cleanup_loop():
@@ -323,13 +365,16 @@ def run_scraper(job_id, data):
                     job_keywords=data.get('job_keywords', ''),
                     job_location=data.get('job_location', ''),
                 )
+                output_csv_content = read_text_file(new_path)
                 db.update_scrape_job(job_id,
                     status='completed',
                     progress='Completed successfully.',
-                    output_file=new_path,
+                    output_file=None,
                     output_filename=new_name,
+                    output_csv_content=output_csv_content,
                     results_count=results_count,
                 )
+                safe_remove_file(new_path)
             else:
                 # If file not found, try finding ANY csv created recently (fallback)
                 db.update_scrape_job(job_id,
@@ -412,10 +457,15 @@ def get_status(job_id):
 @app.route('/api/download/<int:job_id>')
 def download_results(job_id):
     job = db.get_scrape_job(job_id)
-    if not job or not job.get('output_file'):
+    if not job:
         return jsonify({'error': 'File not found'}), 404
-    download_name = job.get('output_filename') or os.path.basename(job['output_file'])
-    return send_file(job['output_file'], as_attachment=True, download_name=download_name)
+    csv_content = job.get('output_csv_content')
+    download_name = job.get('output_filename') or f'scrape_job_{job_id}.csv'
+    if csv_content:
+        return build_csv_download(csv_content, download_name)
+    if job.get('output_file') and os.path.exists(job['output_file']):
+        return send_file(job['output_file'], as_attachment=True, download_name=download_name)
+    return jsonify({'error': 'File not found'}), 404
 
 @app.route('/api/jobs')
 def list_jobs():
@@ -457,21 +507,29 @@ def find_contacts_for_job(job_id):
     if job['status'] != 'completed':
         return jsonify({'error': f'Scraping job not completed (status: {job["status"]})'}), 400
 
+    csv_content = job.get('output_csv_content')
     input_csv = job.get('output_file')
-    if not input_csv or not os.path.exists(input_csv):
+    if csv_content:
+        temp_input = tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8')
+        temp_input.write(csv_content)
+        temp_input.flush()
+        temp_input.close()
+        input_csv = temp_input.name
+    elif input_csv and os.path.exists(input_csv):
+        normalize_output_csv(
+            input_csv,
+            platform_name=job.get('platform', ''),
+            job_keywords=job.get('job_keywords', ''),
+            job_location=job.get('job_location', ''),
+        )
+        csv_content = read_text_file(input_csv)
+    else:
         return jsonify({'error': 'Scraping output CSV not found'}), 404
-
-    # Ensure schema is normalized before contact extraction (handles legacy CSVs too).
-    normalize_output_csv(
-        input_csv,
-        platform_name=job.get('platform', ''),
-        job_keywords=job.get('job_keywords', ''),
-        job_location=job.get('job_location', ''),
-    )
 
     contact_job_id = db.create_contact_job({
         'source_scraping_job': job_id,
         'input_csv': input_csv,
+        'input_csv_content': csv_content,
         'started_at': datetime.now(),
     })
 
@@ -508,14 +566,17 @@ def run_contact_finder(contact_job_id, input_csv):
         if enriched_records:
             db.update_contact_job(contact_job_id, progress='Saving enriched CSV...')
             output_path = extractor.save_enriched_csv(enriched_records)
+            output_csv_content = read_text_file(output_path) if output_path and os.path.exists(output_path) else None
             db.update_contact_job(contact_job_id,
-                output_csv=output_path,
+                output_csv=os.path.basename(output_path) if output_path else None,
+                output_csv_content=output_csv_content,
                 contacts_found=extractor.stats['contacts_found'],
                 total_companies=extractor.stats['total_companies'],
                 api_calls=extractor.stats['api_calls'],
                 status='completed',
                 progress='Completed',
             )
+            safe_remove_file(output_path)
         else:
             db.update_contact_job(contact_job_id, status='error', error='No records were enriched')
 
@@ -528,6 +589,8 @@ def run_contact_finder(contact_job_id, input_csv):
     finally:
         with runtime_lock:
             active_contact_cancel_flags.discard(contact_job_id)
+        if input_csv and os.path.exists(input_csv) and input_csv.startswith(tempfile.gettempdir()):
+            safe_remove_file(input_csv)
 
 @app.route('/api/find-contacts/status/<int:contact_job_id>')
 def get_contact_job_status(contact_job_id):
@@ -539,14 +602,16 @@ def get_contact_job_status(contact_job_id):
 @app.route('/api/find-contacts/download/<int:contact_job_id>')
 def download_contact_results(contact_job_id):
     job = db.get_contact_job(contact_job_id)
-    if not job or not job.get('output_csv'):
+    if not job:
         return jsonify({'error': 'Enriched CSV not found'}), 404
-
-    output_csv = job['output_csv']
-    if not os.path.exists(output_csv):
-        return jsonify({'error': 'File not found'}), 404
-
-    return send_file(output_csv, as_attachment=True, download_name=os.path.basename(output_csv))
+    csv_content = job.get('output_csv_content')
+    filename = os.path.basename(job.get('output_csv') or f'contact_job_{contact_job_id}.csv')
+    if csv_content:
+        return build_csv_download(csv_content, filename)
+    output_csv = job.get('output_csv')
+    if output_csv and os.path.exists(output_csv):
+        return send_file(output_csv, as_attachment=True, download_name=filename)
+    return jsonify({'error': 'File not found'}), 404
 
 
 @app.route('/api/find-contacts/cancel/<int:contact_job_id>', methods=['POST'])

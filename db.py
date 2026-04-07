@@ -27,12 +27,12 @@ DATABASE_URL = os.getenv(
 _SCRAPE_COLS = frozenset({
     'status', 'progress', 'platform', 'job_keywords', 'job_location',
     'file_id', 'timestamp', 'started_at', 'jobs_found', 'jobs_processed',
-    'results_count', 'output_file', 'output_filename', 'error',
+    'results_count', 'output_file', 'output_filename', 'output_csv_content', 'error',
 })
 
 _CONTACT_COLS = frozenset({
     'status', 'progress', 'source_scraping_job', 'input_csv', 'output_csv',
-    'started_at', 'contacts_found', 'total_companies', 'api_calls', 'error',
+    'input_csv_content', 'output_csv_content', 'started_at', 'contacts_found', 'total_companies', 'api_calls', 'error',
 })
 
 _pool: psycopg2.pool.ThreadedConnectionPool | None = None
@@ -105,6 +105,7 @@ def _create_schema() -> None:
                 results_count   INT          NOT NULL DEFAULT 0,
                 output_file     TEXT,
                 output_filename TEXT,
+                output_csv_content TEXT,
                 error           TEXT
             );
 
@@ -114,13 +115,19 @@ def _create_schema() -> None:
                 progress             TEXT,
                 source_scraping_job  INT         REFERENCES scrape_jobs(id) ON DELETE SET NULL,
                 input_csv            TEXT,
+                input_csv_content    TEXT,
                 output_csv           TEXT,
+                output_csv_content   TEXT,
                 started_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
                 contacts_found       INT         NOT NULL DEFAULT 0,
                 total_companies      INT         NOT NULL DEFAULT 0,
                 api_calls            INT         NOT NULL DEFAULT 0,
                 error                TEXT
             );
+
+            ALTER TABLE scrape_jobs ADD COLUMN IF NOT EXISTS output_csv_content TEXT;
+            ALTER TABLE contact_jobs ADD COLUMN IF NOT EXISTS input_csv_content TEXT;
+            ALTER TABLE contact_jobs ADD COLUMN IF NOT EXISTS output_csv_content TEXT;
             """)
 
 
@@ -193,13 +200,14 @@ def create_contact_job(data: dict) -> int:
             cur.execute(
                 """
                 INSERT INTO contact_jobs
-                    (source_scraping_job, input_csv, started_at)
-                VALUES (%s, %s, %s)
+                    (source_scraping_job, input_csv, input_csv_content, started_at)
+                VALUES (%s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     data.get('source_scraping_job'),
                     data.get('input_csv'),
+                    data.get('input_csv_content'),
                     data.get('started_at', datetime.now()),
                 ),
             )
