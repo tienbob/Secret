@@ -9,6 +9,8 @@ import uuid
 import time
 import re
 import signal
+import platform
+import sys
 
 app = Flask(__name__)
 
@@ -84,12 +86,20 @@ def start_scrape():
 def run_scraper(job_id, data):
     temp_script = None
     platform_name = data.get('platform')
+    browser = data.get('browser') or os.getenv('BROWSER') or ('brave' if platform.system() == 'Darwin' else 'chrome')
+    brave_binary_path = data.get('brave_binary_path') or os.getenv('BRAVE_BINARY_PATH', '')
+    run_timestamp = scraping_jobs.get(job_id, {}).get('started_at') or datetime.now().isoformat()
     
     try:
         # 1. Select Template
-        script_template = 'linkedin_scraper.py' if platform_name == 'linkedin' else 'rubyonremote_scraper.py'
+        script_map = {
+            'linkedin': 'linkedin_scraper.py',
+            'rubyonremote': 'rubyonremote_scraper.py',
+            'wantedly': 'wantedly_scraper.py',
+        }
+        script_template = script_map.get(platform_name)
         
-        if not os.path.exists(script_template):
+        if not script_template or not os.path.exists(script_template):
             raise FileNotFoundError(f"Script template {script_template} not found")
         
         # 2. Prepare Configured Script
@@ -101,20 +111,26 @@ def run_scraper(job_id, data):
         content = re.sub(r'JOB_LOCATION\s*=\s*["\'].*?["\']', f'JOB_LOCATION = "{data.get("job_location")}"', content)
         content = re.sub(r'MAX_PAGES_TO_SCRAPE\s*=\s*\d+', f'MAX_PAGES_TO_SCRAPE = {data.get("max_pages", 1)}', content)
         content = re.sub(r'HEADLESS\s*=\s*(True|False)', f'HEADLESS = {data.get("headless", False)}', content)
+        content = re.sub(r'BROWSER\s*=\s*["\'].*?["\']', f'BROWSER = "{browser}"', content)
+        content = re.sub(r'BRAVE_BINARY_PATH\s*=\s*["\'].*?["\']', f'BRAVE_BINARY_PATH = "{brave_binary_path}"', content)
+        content = re.sub(r'RUN_TIMESTAMP\s*=\s*["\'].*?["\']', f'RUN_TIMESTAMP = "{run_timestamp}"', content)
         content = re.sub(r'JOB_WORKPLACE_TYPE\s*=\s*["\'].*?["\']', f'JOB_WORKPLACE_TYPE = "{data.get("workplace_type", "remote")}"', content)
         content = re.sub(r'INDUSTRY_FILTER\s*=\s*["\'].*?["\']', f'INDUSTRY_FILTER = "{data.get("industry_filter", "")}"', content)
         content = re.sub(r'TIME_POSTED_FILTER\s*=\s*["\'].*?["\']', f'TIME_POSTED_FILTER = "{data.get("time_posted", "")}"', content)
         content = re.sub(r'SORT_BY\s*=\s*["\'].*?["\']', f'SORT_BY = "{data.get("sort_by", "R")}"', content)
+        content = re.sub(r'HIRING_TYPE\s*=\s*["\'].*?["\']', f'HIRING_TYPE = "{data.get("hiring_type", "mid_career")}"', content)
+        content = re.sub(r'ORDER\s*=\s*["\'].*?["\']', f'ORDER = "{data.get("wantedly_order", "mixed")}"', content)
+        content = re.sub(r'ONLY_NEW\s*=\s*(True|False)', f'ONLY_NEW = {data.get("only_new", True)}', content)
         
         temp_script = f'temp_{platform_name}_{job_id}.py'
         with open(temp_script, 'w', encoding='utf-8') as f:
             f.write(content)
             
         # 3. Execute with UNBUFFERED Output (-u)
-        scraping_jobs[job_id]['progress'] = 'Launching browser...'
+        scraping_jobs[job_id]['progress'] = f'Launching browser ({browser})...'
         
         process = subprocess.Popen(
-            ['python3', '-u', temp_script], # -u IS CRITICAL FOR REAL-TIME LOGS
+            [sys.executable, '-u', temp_script], # Keep child process in same env as Flask app
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -237,4 +253,6 @@ def list_jobs():
 
 if __name__ == '__main__':
     start_cleanup_thread()
-    app.run(port=5000)
+    host = os.getenv('HOST', '127.0.0.1')
+    port = int(os.getenv('PORT', '5050'))
+    app.run(host=host, port=port)

@@ -4,6 +4,8 @@ import json
 import csv
 import os
 import platform
+import re
+import subprocess
 import sys
 from urllib.parse import quote_plus
 
@@ -14,6 +16,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.common.selenium_manager import SeleniumManager
 from webdriver_manager.chrome import ChromeDriverManager
 
 # --- Configuration ---
@@ -24,7 +27,11 @@ INDUSTRY_FILTER = ""  # LinkedIn industry code (e.g., 4 = Computer Software, lea
 TIME_POSTED_FILTER = ""  # Last X days (e.g., r2592000 = 30 days, r604800 = 7 days, leave empty for all)
 SORT_BY = ""  # R = Most Recent, DD = Date Posted, leave empty for relevance
 MAX_PAGES_TO_SCRAPE = 1
-HEADLESS = False  
+HEADLESS = False
+BROWSER = "brave"  # Options: chrome, brave
+BRAVE_BINARY_PATH = ""
+USER_AGENT = ""
+RUN_TIMESTAMP = ""
 
 # --- Selectors (Updated for LinkedIn's new job detail pane structure) ---
 SELECTORS = {
@@ -40,9 +47,49 @@ SELECTORS = {
 }
 
 # --- Browser Setup ---
+def resolve_brave_binary_path():
+    if BRAVE_BINARY_PATH and os.path.exists(BRAVE_BINARY_PATH):
+        return BRAVE_BINARY_PATH
+
+    system = platform.system()
+    if system == "Darwin":
+        default_path = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+        return default_path if os.path.exists(default_path) else None
+    if system == "Windows":
+        default_path = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+        return default_path if os.path.exists(default_path) else None
+
+    for path in ["/usr/bin/brave-browser", "/usr/bin/brave"]:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def default_user_agent():
+    system = platform.system()
+    if system == "Darwin":
+        return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    if system == "Windows":
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+
+def detect_browser_major_version(binary_path):
+    if not binary_path:
+        return None
+
+    try:
+        output = subprocess.check_output([binary_path, "--version"], text=True).strip()
+        match = re.search(r"(\d+)\.\d+\.\d+\.\d+", output)
+        return match.group(1) if match else None
+    except Exception:
+        return None
+
+
 def setup_driver():
     current_dir = os.getcwd()
     local_profile_path = os.path.join(current_dir, "chrome_profile")
+    browser = (BROWSER or "chrome").lower().strip()
     
     options = ChromeOptions()
     options.add_argument(f"--user-data-dir={local_profile_path}")
@@ -53,18 +100,51 @@ def setup_driver():
     options.add_argument("--window-size=1280,1024")
     options.add_argument("--log-level=3")
     options.add_argument("--remote-debugging-port=9222")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    options.add_argument(f"user-agent={USER_AGENT or default_user_agent()}")
+
+    if browser == "brave":
+        brave_binary = resolve_brave_binary_path()
+        if not brave_binary:
+            raise FileNotFoundError(
+                "Brave binary not found. Install Brave or set BRAVE_BINARY_PATH."
+            )
+        options.binary_location = brave_binary
 
     if HEADLESS and os.path.exists(local_profile_path):
         options.add_argument("--headless=new")
 
     try:
-        service = ChromeService(ChromeDriverManager().install())
+        sm_args = ["--browser", "chrome"]
+        brave_binary = None
+        if browser == "brave":
+            brave_binary = options.binary_location
+            sm_args.extend(["--browser-path", brave_binary])
+
+        sm_result = SeleniumManager().binary_paths(sm_args)
+        service = ChromeService(sm_result["driver_path"])
         driver = webdriver.Chrome(service=service, options=options)
+        print(f"Browser mode: {browser}")
         return driver
     except Exception as e:
-        print(f"FATAL ERROR: {e}")
-        sys.exit(1)
+        # Fallback for environments where Selenium Manager cannot fetch metadata.
+        try:
+            driver_version = None
+            if browser == "brave":
+                driver_version = detect_browser_major_version(options.binary_location)
+                if driver_version:
+                    driver_version = f"{driver_version}.0.0.0"
+
+            service = ChromeService(
+                ChromeDriverManager(driver_version=driver_version).install()
+                if driver_version
+                else ChromeDriverManager().install()
+            )
+            driver = webdriver.Chrome(service=service, options=options)
+            print(f"Browser mode: {browser} (fallback driver manager)")
+            return driver
+        except Exception as fallback_error:
+            print(f"FATAL ERROR: {fallback_error}")
+            sys.exit(1)
 
 # --- Scroll Logic (The Fix) ---
 def load_full_job_list(driver):
@@ -128,6 +208,10 @@ def load_full_job_list(driver):
 def clean_text(text):
     if not text: return None
     return " ".join(text.split())
+
+
+def export_run_timestamp():
+    return RUN_TIMESTAMP or time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 def main():
     driver = setup_driver()
@@ -252,7 +336,11 @@ def main():
                     processed.add(job_id)
                     
                     # Scrape details
-                    details = {"linkedin_job_id": job_id}
+                    details = {
+                        "linkedin_job_id": job_id,
+                        "scrape_run_at": export_run_timestamp(),
+                        "company_website": None,
+                    }
                     
                     # Get title
                     try:
@@ -264,6 +352,7 @@ def main():
                     try:
                         el = driver.find_element(By.CSS_SELECTOR, SELECTORS["detail_pane"]["company_name"])
                         details["company_name"] = " ".join(el.text.split())
+                        details["company_website"] = el.get_attribute("href")
                     except: details["company_name"] = None
                     
                     # Get location (first tvm__text span)
@@ -343,7 +432,7 @@ def main():
         
         # Format: linkedin_KEYWORDS_LOCATION.csv
         filename = f"linkedin_{clean_kw}_{clean_loc}.csv"
-        keys = ['linkedin_job_id', 'company_name', 'title', 'job_location', 'posted_date', 'salary_info', 'description']
+        keys = ['linkedin_job_id', 'scrape_run_at', 'company_name', 'company_website', 'title', 'job_location', 'posted_date', 'salary_info', 'description']
         
         print(f"\n💾 Saving {len(all_data)} jobs to: {filename}")
         with open(filename, "w", newline="", encoding="utf-8") as f:

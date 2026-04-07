@@ -21,6 +21,9 @@ document.getElementById('scrapeForm').addEventListener('submit', async (e) => {
         industry_filter: document.getElementById('industry_filter').value,
         time_posted: document.getElementById('time_posted').value,
         sort_by: document.getElementById('sort_by').value,
+        hiring_type: document.getElementById('hiring_type').value,
+        wantedly_order: document.getElementById('wantedly_order').value,
+        only_new: document.getElementById('only_new').checked,
         max_pages: parseInt(document.getElementById('max_pages').value),
         headless: document.getElementById('headless').checked
     };
@@ -60,6 +63,7 @@ async function checkStatus() {
         
         // Update UI
         document.getElementById('statusText').innerText = status.progress;
+        document.getElementById('statusRunAt').innerText = status.started_at ? `Run time: ${formatDate(status.started_at)}` : '';
         const badge = document.getElementById('statusBadge');
         const fill = document.getElementById('progressFill');
         
@@ -116,7 +120,7 @@ async function loadHistory() {
                 <div class="job-info">
                     <h4>${job.platform} - ${job.job_keywords}</h4>
                     <div class="meta">
-                        ${formatDate(job.started_at)} • 
+                        Run time: ${formatDate(job.started_at)} • 
                         ${job.results_count !== undefined ? job.results_count + ' items' : job.status}
                     </div>
                 </div>

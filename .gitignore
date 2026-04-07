@@ -6,6 +6,7 @@ scraper_outputs/
 
 # Temporary scraper scripts
 temp_scraper_*.py
+temp_*.py
 
 # CSV and JSON files
 *.csv
@@ -22,5 +23,7 @@ __pycache__/
 
 # OS
 .DS_Store
+
+.venv
 
 chrome_profile/
