@@ -9,6 +9,11 @@ function formatDate(isoString) {
     return new Date(isoString).toLocaleString();
 }
 
+function displayPlatformName(platform) {
+    if (platform === 'mynavi') return 'Tenshoku';
+    return platform;
+}
+
 function updatePlatformForm() {
     const platform = document.getElementById('platform').value;
     const hint = document.getElementById('platformHint');
@@ -53,6 +58,58 @@ function showStatusPanel() {
 
 function showContactStatusPanel() {
     document.getElementById('contactStatusPanel').style.display = 'block';
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+function renderHistoryActions(job) {
+    const scrapeActions = [];
+    const contactActions = [];
+
+    if (job.status === 'completed') {
+        scrapeActions.push(`<a href="/api/download/${job.job_id}" class="btn btn-success btn-icon">Download CSV</a>`);
+    }
+    if (job.status === 'running') {
+        scrapeActions.push(`<button class="btn btn-danger js-cancel-scrape" data-job-id="${job.job_id}">Cancel Scrape</button>`);
+    }
+    if (job.can_find_contacts && (!job.latest_contact_job || job.latest_contact_job.status !== 'running')) {
+        scrapeActions.push(`<button class="btn btn-secondary js-find-contacts" data-job-id="${job.job_id}">Find Contacts</button>`);
+    }
+    if (job.status !== 'running') {
+        scrapeActions.push(`<button class="btn btn-danger js-delete-scrape" data-job-id="${job.job_id}">Delete Scrape</button>`);
+    }
+
+    if (job.latest_contact_job && job.latest_contact_job.status === 'running') {
+        contactActions.push(`<button class="btn btn-danger js-cancel-contact" data-contact-job-id="${job.latest_contact_job.contact_job_id}">Cancel Contact</button>`);
+    }
+    if (job.latest_contact_job && job.latest_contact_job.status === 'completed') {
+        contactActions.push(`<a href="/api/find-contacts/download/${job.latest_contact_job.contact_job_id}" class="btn btn-success btn-icon">Download Contacts</a>`);
+    }
+    if (job.latest_contact_job && job.latest_contact_job.status !== 'running') {
+        contactActions.push(`<button class="btn btn-danger js-delete-contact" data-contact-job-id="${job.latest_contact_job.contact_job_id}">Delete Contact</button>`);
+    }
+
+    return `
+        <div class="job-action-groups">
+            <div class="job-action-group">
+                <div class="job-action-label">Scrape</div>
+                <div class="job-actions-row">${scrapeActions.join('') || '<span class="job-action-empty">No actions</span>'}</div>
+            </div>
+            ${contactActions.length ? `
+                <div class="job-action-group job-action-group-contact">
+                    <div class="job-action-label">Contacts</div>
+                    <div class="job-actions-row">${contactActions.join('')}</div>
+                </div>
+            ` : ''}
+        </div>
+    `;
 }
 
 function hideStatusPanel() {
@@ -220,20 +277,6 @@ function hydrateCurrentPanels(jobs) {
         document.getElementById('contactProgressFill').classList.add('pulse');
         startContactPolling();
     }
-
-    if (!currentJobId && jobs.length > 0) {
-        const latest = jobs[0];
-        if (latest.status === 'completed' || latest.status === 'error') {
-            currentJobId = latest.job_id;
-            showStatusPanel();
-            setScrapeTerminalUI(latest, latest.job_id);
-
-            if (latest.latest_contact_job && (latest.latest_contact_job.status === 'completed' || latest.latest_contact_job.status === 'error')) {
-                showContactStatusPanel();
-                setContactTerminalUI(latest.latest_contact_job, latest.latest_contact_job.contact_job_id);
-            }
-        }
-    }
 }
 
 // 1. Submit Form
@@ -321,6 +364,7 @@ async function checkStatus() {
 
         if (status.status === 'completed' || status.status === 'error' || status.status === 'cancelled') {
             clearInterval(pollInterval);
+            pollInterval = null;
             document.getElementById('startBtn').disabled = false;
             document.getElementById('startBtn').innerText = "Start Scraping";
             fill.classList.remove('pulse');
@@ -338,7 +382,9 @@ async function checkStatus() {
                 document.getElementById('downloadArea').style.display = 'none';
                 document.getElementById('statusText').innerText = status.progress || status.error || status.status;
             }
-            
+
+            currentJobId = null;
+            hideStatusPanel();
             loadHistory(); // Refresh history
         }
     } catch (e) {
@@ -413,6 +459,7 @@ async function checkContactStatus() {
 
         if (status.status === 'completed' || status.status === 'error' || status.status === 'cancelled') {
             clearInterval(contactPollInterval);
+            contactPollInterval = null;
             fill.classList.remove('pulse');
             document.getElementById('contactCancelArea').style.display = 'none';
 
@@ -423,6 +470,8 @@ async function checkContactStatus() {
                 document.getElementById('contactStatusText').innerText = status.progress || status.error || 'Contact finder failed';
             }
 
+            currentContactJobId = null;
+            hideContactStatusPanel();
             loadHistory();
         }
     } catch (err) {
@@ -447,23 +496,17 @@ async function loadHistory() {
         container.innerHTML = data.jobs.map(job => `
             <div class="job-item">
                 <div class="job-info">
-                    <h4>${job.platform} - ${job.job_keywords}</h4>
+                    <div class="job-header-row">
+                        <h4>${escapeHtml(displayPlatformName(job.platform))} - ${escapeHtml(job.job_keywords)}</h4>
+                        <span class="status-badge ${job.status}">${escapeHtml(job.status)}</span>
+                    </div>
                     <div class="meta">
                         Run time: ${formatDate(job.started_at)} • 
                         ${job.results_count !== undefined ? job.results_count + ' items' : job.status}
                         ${job.latest_contact_job ? ` • Contact: ${job.latest_contact_job.status}` : ''}
                     </div>
                 </div>
-                <div class="job-actions">
-                    <span class="status-badge ${job.status}">${job.status}</span>
-                    ${job.status === 'completed' ? `<a href="/api/download/${job.job_id}" class="btn btn-success btn-icon">CSV ⬇</a>` : ''}
-                    ${job.status === 'running' ? `<button class="btn btn-danger js-cancel-scrape" data-job-id="${job.job_id}">Cancel</button>` : ''}
-                    ${job.can_find_contacts && (!job.latest_contact_job || job.latest_contact_job.status !== 'running') ? `<button class="btn btn-secondary js-find-contacts" data-job-id="${job.job_id}">Find Contacts</button>` : ''}
-                    ${job.latest_contact_job && job.latest_contact_job.status === 'running' ? `<button class="btn btn-danger js-cancel-contact" data-contact-job-id="${job.latest_contact_job.contact_job_id}">Cancel Contact</button>` : ''}
-                    ${job.latest_contact_job && job.latest_contact_job.status === 'completed' ? `<a href="/api/find-contacts/download/${job.latest_contact_job.contact_job_id}" class="btn btn-success btn-icon">Contacts ⬇</a>` : ''}
-                    ${job.latest_contact_job && job.latest_contact_job.status !== 'running' ? `<button class="btn btn-danger js-delete-contact" data-contact-job-id="${job.latest_contact_job.contact_job_id}">Delete Contact</button>` : ''}
-                    ${job.status !== 'running' ? `<button class="btn btn-danger js-delete-scrape" data-job-id="${job.job_id}">Delete</button>` : ''}
-                </div>
+                ${renderHistoryActions(job)}
             </div>
         `).join('');
 

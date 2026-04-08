@@ -1,6 +1,6 @@
 # Job Scraper Web Interface
 
-A beautiful web dashboard to scrape job listings from LinkedIn, RubyOnRemote, and Wantedly.
+A beautiful web dashboard to scrape job listings from LinkedIn, RubyOnRemote, Wantedly, Tenshoku, and Forkwell.
 
 ## Features
 
@@ -8,7 +8,7 @@ A beautiful web dashboard to scrape job listings from LinkedIn, RubyOnRemote, an
 - 🔄 Real-time job status updates
 - 📊 Job history tracking
 - 📥 Direct CSV download
-- 🎯 Support for LinkedIn, RubyOnRemote, and Wantedly
+- 🎯 Support for LinkedIn, RubyOnRemote, Wantedly, Tenshoku, and Forkwell
 - ⚙️ Configurable scraping parameters
 
 ## Installation
@@ -64,12 +64,12 @@ http://127.0.0.1:5050
 ```
 
 3. Fill in the scraping parameters:
-  - **Platform**: Choose LinkedIn, RubyOnRemote, or Wantedly
-   - **Job Keywords**: Enter the job title or keywords (e.g., "Ruby on Rails")
-   - **Location**: Enter the location (e.g., "Japan", "US", "Europe")
-   - **Max Pages**: Number of pages to scrape (1-10)
+  - **Platform**: Choose LinkedIn, RubyOnRemote, Wantedly, Tenshoku, or Forkwell
+  - **Job Keywords**: Enter the job title or keywords (e.g., "Ruby on Rails")
+  - **Location**: Enter the location (e.g., "Japan", "US", "Europe")
+  - **Max Pages**: Number of pages to scrape (1-10)
   - **Wantedly**: Configure Hiring Type, Order, and Only New filters
-   - **Headless Mode**: Check to run browser in background (faster but you can't see the progress)
+  - **Headless Mode**: Check to run browser in background (faster but you can't see the progress)
 
 2. Click "Start Scraping" and monitor the progress in real-time
 
@@ -79,7 +79,7 @@ http://127.0.0.1:5050
 
 - **Frontend**: HTML/CSS/JavaScript with a modern, gradient design
 - **Backend**: Flask web server that manages scraping jobs
-- **Scraping**: Runs your `linkedin_scraper.py`, `rubyonremote_scraper.py`, and `wantedly_scraper.py` scripts
+- **Scraping**: Runs your platform scraper scripts including LinkedIn, RubyOnRemote, Wantedly, Tenshoku, and Forkwell
 - **Real-time Updates**: Status polling updates the UI every 2 seconds
 
 ## File Structure
@@ -95,6 +95,8 @@ http://127.0.0.1:5050
 ├── linkedin_scraper.py      # LinkedIn scraper (existing)
 ├── rubyonremote_scraper.py  # RubyOnRemote scraper (existing)
 ├── wantedly_scraper.py      # Wantedly scraper (existing)
+├── mynavi_scraper.py         # Tenshoku scraper (existing)
+├── forkwell_scraper.py       # Forkwell scraper
 └── requirements_web.txt     # Web dependencies
 ```
 
@@ -105,4 +107,6 @@ http://127.0.0.1:5050
   - LinkedIn: `linkedin_{keywords}_{location}.csv`
   - RubyOnRemote: `rubyonremote_{keywords}_{location}.csv`
   - Wantedly: `wantedly_{keywords}_{location}.csv`
+  - Tenshoku: `tenshoku_{keywords}_{location}.csv`
+  - Forkwell: `forkwell_{keywords}_{location}.csv`
 - Job history is kept in memory and will reset when you restart the server

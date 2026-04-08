@@ -1,19 +1,11 @@
 import csv
-import os
+import json
 import re
-import sys
 import time
-import platform
-import subprocess
 from urllib.parse import urlencode, quote_plus
-import requests
 
-# Selenium
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.common.selenium_manager import SeleniumManager
-from webdriver_manager.chrome import ChromeDriverManager
+import requests
+from bs4 import BeautifulSoup
 
 # --- Configuration ---
 JOB_KEYWORDS = "Ruby on Rails"
@@ -47,102 +39,8 @@ def export_run_timestamp():
     return RUN_TIMESTAMP or time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
-def resolve_brave_binary_path():
-    if BRAVE_BINARY_PATH and os.path.exists(BRAVE_BINARY_PATH):
-        return BRAVE_BINARY_PATH
-
-    system = platform.system()
-    if system == "Darwin":
-        default_path = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
-        return default_path if os.path.exists(default_path) else None
-    if system == "Windows":
-        default_path = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
-        return default_path if os.path.exists(default_path) else None
-
-    for path in ["/usr/bin/brave-browser", "/usr/bin/brave"]:
-        if os.path.exists(path):
-            return path
-    return None
-
-
 def default_user_agent():
-    system = platform.system()
-    if system == "Darwin":
-        return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    if system == "Windows":
-        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-
-
-def detect_browser_major_version(binary_path):
-    if not binary_path:
-        return None
-
-    try:
-        output = subprocess.check_output([binary_path, "--version"], text=True).strip()
-        match = re.search(r"(\d+)\.\d+\.\d+\.\d+", output)
-        return match.group(1) if match else None
-    except Exception:
-        return None
-
-
-def setup_driver():
-    current_dir = os.getcwd()
-    local_profile_path = os.path.join(current_dir, "chrome_profile")
-    browser = (BROWSER or "chrome").lower().strip()
-
-    options = ChromeOptions()
-    options.add_argument(f"--user-data-dir={local_profile_path}")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--window-size=1280,1024")
-    options.add_argument("--log-level=3")
-    options.add_argument("--remote-debugging-port=9222")
-    options.add_argument(f"user-agent={USER_AGENT or default_user_agent()}")
-
-    if browser == "brave":
-        brave_binary = resolve_brave_binary_path()
-        if not brave_binary:
-            raise FileNotFoundError(
-                "Brave binary not found. Install Brave or set BRAVE_BINARY_PATH."
-            )
-        options.binary_location = brave_binary
-
-    if HEADLESS:
-        options.add_argument("--headless=new")
-
-    try:
-        sm_args = ["--browser", "chrome"]
-        if browser == "brave":
-            sm_args.extend(["--browser-path", options.binary_location])
-
-        sm_result = SeleniumManager().binary_paths(sm_args)
-        service = ChromeService(sm_result["driver_path"])
-        driver = webdriver.Chrome(service=service, options=options)
-        print(f"Browser mode: {browser}")
-        return driver
-    except Exception:
-        # Fallback for environments where Selenium Manager cannot fetch metadata.
-        try:
-            driver_version = None
-            if browser == "brave":
-                driver_version = detect_browser_major_version(options.binary_location)
-                if driver_version:
-                    driver_version = f"{driver_version}.0.0.0"
-
-            service = ChromeService(
-                ChromeDriverManager(driver_version=driver_version).install()
-                if driver_version
-                else ChromeDriverManager().install()
-            )
-            driver = webdriver.Chrome(service=service, options=options)
-            print(f"Browser mode: {browser} (fallback driver manager)")
-            return driver
-        except Exception as fallback_error:
-            print(f"FATAL: {fallback_error}")
-            sys.exit(1)
+    return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 
 def build_search_url(page_num):
@@ -158,18 +56,23 @@ def build_search_url(page_num):
 
 
 def extract_project_ids(list_html):
+    soup = BeautifulSoup(list_html, "html.parser")
     ids = []
 
-    # Pattern 1: classic anchor links.
-    ids.extend(re.findall(r'href="/projects/(\d+)', list_html))
+    # 1) IDs from standard anchors.
+    for anchor in soup.select("a[href]"):
+        href = anchor.get("href") or ""
+        match = re.search(r"/projects/(\d+)", href)
+        if match:
+            ids.append(match.group(1))
 
-    # Pattern 2: full paths in any string content.
+    # 2) IDs from script payloads and inline text.
     ids.extend(re.findall(r'/projects/(\d+)', list_html))
 
-    # Pattern 3: Next.js payload references such as JobPost:{\"id\":\"123\"}
+    # 3) Next.js payload references such as JobPost:{\"id\":\"123\"}
     ids.extend(re.findall(r'JobPost:\{\\"id\\":\\"(\d+)\\"\}', list_html))
 
-    # Pattern 4: Fallback for arrays like "fetched_ids":[1,2,3]
+    # 4) Fallback for arrays like "fetched_ids":[1,2,3]
     fetched_ids_match = re.search(r'"fetched_ids":\[(.*?)\]', list_html)
     if fetched_ids_match:
         ids.extend(re.findall(r'\d+', fetched_ids_match.group(1)))
@@ -184,15 +87,10 @@ def extract_project_ids(list_html):
 
 
 def extract_meta_content(html, property_name):
-    # Supports both double and single quotes around attributes.
-    patterns = [
-        rf'<meta[^>]*property="{re.escape(property_name)}"[^>]*content="([^"]+)"',
-        rf"<meta[^>]*property='{re.escape(property_name)}'[^>]*content='([^']+)'",
-    ]
-    for pat in patterns:
-        match = re.search(pat, html, re.IGNORECASE)
-        if match:
-            return clean_text(match.group(1))
+    soup = BeautifulSoup(html, "html.parser")
+    meta = soup.find("meta", attrs={"property": property_name})
+    if meta:
+        return clean_text(meta.get("content"))
     return None
 
 
@@ -208,8 +106,34 @@ def strip_wantedly_title_suffix(title):
 
 
 def extract_company_slug(html):
+    soup = BeautifulSoup(html, "html.parser")
+    company_link = soup.select_one('a[href*="/companies/"]')
+    if company_link:
+        href = company_link.get("href") or ""
+        match = re.search(r"/companies/([^\"'#?]+)", href)
+        if match:
+            return match.group(1)
+
     match = re.search(r'/companies/([^"\'#?]+)', html)
     return match.group(1) if match else None
+
+
+def parse_project_ldjson(html_text):
+    soup = BeautifulSoup(html_text, "html.parser")
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text() or "").strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+
+        candidates = payload if isinstance(payload, list) else [payload]
+        for candidate in candidates:
+            if isinstance(candidate, dict) and candidate.get("@type") in {"JobPosting", "Posting"}:
+                return candidate
+    return {}
 
 
 def seems_location_match(text, location):
@@ -241,19 +165,6 @@ def build_request_headers():
 def main():
     session = requests.Session()
     session.headers.update(build_request_headers())
-
-    # Optional cookie hydration from Selenium profile can help with some anti-bot setups.
-    # We keep this non-fatal so scraping can proceed even if browser setup fails.
-    try:
-        driver = setup_driver()
-        driver.get("https://www.wantedly.com/projects")
-        time.sleep(1)
-        for cookie in driver.get_cookies():
-            if cookie.get("name") and cookie.get("value"):
-                session.cookies.set(cookie["name"], cookie["value"], domain=cookie.get("domain"))
-        driver.quit()
-    except Exception:
-        pass
 
     try:
         print("Scanning Wantedly listings...")
@@ -297,14 +208,17 @@ def main():
                 response = session.get(detail_url, timeout=30)
                 response.raise_for_status()
                 html = response.text
+                ld = parse_project_ldjson(html)
                 og_title = extract_meta_content(html, "og:title")
                 og_desc = extract_meta_content(html, "og:description")
                 og_url = extract_meta_content(html, "og:url") or detail_url
                 published_at = extract_meta_content(html, "article:published_time")
                 company_slug = extract_company_slug(html)
 
-                title = strip_wantedly_title_suffix(og_title)
-                description = clean_text(og_desc)
+                title = strip_wantedly_title_suffix(og_title) or clean_text(ld.get("title"))
+                description = clean_text(og_desc) or clean_text(ld.get("description"))
+                if not published_at:
+                    published_at = clean_text(ld.get("datePosted"))
 
                 if should_enforce_location_filter(JOB_LOCATION) and not (
                     seems_location_match(title, JOB_LOCATION)

@@ -10,6 +10,7 @@ import time
 import re
 import platform
 import sys
+from urllib.parse import urlparse
 import pandas as pd
 
 import db
@@ -81,12 +82,57 @@ def format_display_date(value) -> str:
     return text
 
 
+def derive_company_from_website(url: str) -> str:
+    """Infer a readable company token from a website URL hostname."""
+    if not url:
+        return ''
+
+    try:
+        parsed = urlparse(str(url).strip())
+        host = (parsed.netloc or parsed.path or '').lower().strip()
+        host = host.split('@')[-1].split(':')[0]
+        if host.startswith('www.'):
+            host = host[4:]
+        if not host:
+            return ''
+
+        social_hosts = {'twitter.com', 'x.com', 'linkedin.com', 'www.linkedin.com'}
+        if host in social_hosts:
+            path_parts = [part for part in parsed.path.split('/') if part]
+            if path_parts:
+                reserved = {'company', 'jobs', 'posts', 'status', 'share', 'intent', 'home', 'search', 'hashtag'}
+                slug = path_parts[0].lstrip('@')
+                if slug and slug.lower() not in reserved:
+                    slug = re.sub(r'[-_]+', ' ', slug).strip()
+                    return slug.title() if slug else ''
+
+        parts = [p for p in host.split('.') if p]
+        if not parts:
+            return ''
+
+        if len(parts) >= 3 and parts[-2] in {'co', 'com', 'org', 'net'} and len(parts[-1]) == 2:
+            base = parts[-3]
+        elif len(parts) >= 2:
+            base = parts[-2]
+        else:
+            base = parts[0]
+
+        base = re.sub(r'[-_]+', ' ', base).strip()
+        return base.title() if base else ''
+    except Exception:
+        return ''
+
+
 def normalize_output_csv(csv_path: str, platform_name: str, job_keywords: str, job_location: str) -> int:
     """Normalize scraper-specific CSV columns into one unified output schema."""
     df = pd.read_csv(csv_path)
 
+    normalized_platform_name = 'tenshoku' if platform_name == 'mynavi' else platform_name
+
     if 'source_platform' not in df.columns:
-        df['source_platform'] = platform_name
+        df['source_platform'] = normalized_platform_name
+    else:
+        df['source_platform'] = df['source_platform'].replace({'mynavi': 'tenshoku'}).fillna(normalized_platform_name)
 
     # Normalize platform-specific ID fields to source_job_id
     if 'source_job_id' not in df.columns:
@@ -104,6 +150,12 @@ def normalize_output_csv(csv_path: str, platform_name: str, job_keywords: str, j
             df['company'] = df['company_name']
         else:
             df['company'] = ''
+
+    if 'company_website' in df.columns:
+        df['company'] = df['company'].fillna('').astype('string')
+        blank_company = df['company'].str.strip() == ''
+        derived_company = df['company_website'].fillna('').apply(derive_company_from_website).astype('string')
+        df['company'] = df['company'].mask(blank_company, derived_company)
 
     # Normalize date/location naming
     if 'date' not in df.columns:
@@ -239,11 +291,18 @@ def run_scraper(job_id, data):
     run_timestamp = (job or {}).get('started_at', '') or datetime.now().isoformat()
     
     try:
+        existing_csv_paths = set()
+        for candidate_name in os.listdir('.'):
+            if candidate_name.lower().endswith('.csv'):
+                existing_csv_paths.add(os.path.abspath(candidate_name))
+
         # 1. Select Template
         script_map = {
             'linkedin': 'linkedin_scraper.py',
             'rubyonremote': 'rubyonremote_scraper.py',
             'wantedly': 'wantedly_scraper.py',
+            'mynavi': 'mynavi_scraper.py',
+            'forkwell': 'forkwell_scraper.py',
         }
         script_template = script_map.get(platform_name)
         
@@ -346,41 +405,69 @@ def run_scraper(job_id, data):
             return
         
         if process.returncode == 0:
-            # Move File logic
-            # Determine expected filename based on scraper logic
+            # Capture generated CSV, store content in DB, and remove local file.
             clean_kw = data.get('job_keywords', '').replace(' ', '_').replace('/', '-')
             clean_loc = data.get('job_location', '').replace(' ', '_').replace('/', '-')
             
-            # Format: platform_KEYWORDS_LOCATION.csv (keep original format for download)
-            old_name = f"{platform_name}_{clean_kw}_{clean_loc}.csv"
-            new_name = f"{platform_name}_{clean_kw}_{clean_loc}.csv"
-            new_path = os.path.join(OUTPUT_DIR, new_name)
-            
-            if os.path.exists(old_name):
-                import shutil
-                shutil.move(old_name, new_path)
+            if platform_name == 'mynavi':
+                standardized_name = f"tenshoku_{clean_kw}_{clean_loc}.csv"
+            else:
+                standardized_name = f"{platform_name}_{clean_kw}_{clean_loc}.csv"
+
+            produced_csv_path = None
+            expected_candidates = [
+                f"{platform_name}_{clean_kw}_{clean_loc}.csv",
+                f"tenshoku_{clean_kw}_{clean_loc}.csv",
+            ]
+
+            for expected_name in expected_candidates:
+                if os.path.exists(expected_name):
+                    produced_csv_path = os.path.abspath(expected_name)
+                    break
+
+            if not produced_csv_path:
+                recent_csv_paths = []
+                now = time.time()
+                for candidate_name in os.listdir('.'):
+                    if not candidate_name.lower().endswith('.csv'):
+                        continue
+                    abs_path = os.path.abspath(candidate_name)
+                    if abs_path in existing_csv_paths:
+                        continue
+                    try:
+                        mtime = os.path.getmtime(abs_path)
+                    except OSError:
+                        continue
+                    if mtime >= (start_time - 2) and mtime <= (now + 2):
+                        recent_csv_paths.append((mtime, abs_path))
+
+                if recent_csv_paths:
+                    recent_csv_paths.sort(key=lambda item: item[0], reverse=True)
+                    produced_csv_path = recent_csv_paths[0][1]
+
+            if produced_csv_path:
                 results_count = normalize_output_csv(
-                    new_path,
+                    produced_csv_path,
                     platform_name=platform_name,
                     job_keywords=data.get('job_keywords', ''),
                     job_location=data.get('job_location', ''),
                 )
-                output_csv_content = read_text_file(new_path)
+                output_csv_content = read_text_file(produced_csv_path)
                 db.update_scrape_job(job_id,
                     status='completed',
                     progress='Completed successfully.',
                     output_file=None,
-                    output_filename=new_name,
+                    output_filename=standardized_name,
                     output_csv_content=output_csv_content,
                     results_count=results_count,
                 )
-                safe_remove_file(new_path)
+                safe_remove_file(produced_csv_path)
             else:
-                # If file not found, try finding ANY csv created recently (fallback)
+                # No output CSV found despite successful process exit.
                 db.update_scrape_job(job_id,
-                    status='completed',
-                    progress='Completed successfully.',
-                    error='Output file could not be renamed automatically.',
+                    status='error',
+                    progress='Failed to capture output CSV.',
+                    error='Output CSV not found after scraper finished.',
                 )
                 
         else:

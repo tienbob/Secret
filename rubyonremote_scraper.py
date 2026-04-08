@@ -168,7 +168,7 @@ def main():
         
         # Phase 1: Collect Links across Multiple Pages
         driver.get(search_url)
-        time.sleep(3)
+        time.sleep(60)
         
         all_links = []
         

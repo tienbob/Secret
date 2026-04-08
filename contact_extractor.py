@@ -10,9 +10,11 @@ import csv
 import json
 import time
 import logging
+import re
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlparse
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -94,6 +96,47 @@ class ContactExtractor:
             if col in df.columns:
                 return col
         return None
+
+    @staticmethod
+    def _derive_company_from_website(url: str) -> str:
+        """Infer a readable company token from a website URL hostname."""
+        if not url:
+            return ""
+
+        try:
+            parsed = urlparse(str(url).strip())
+            host = (parsed.netloc or parsed.path or "").lower().strip()
+            host = host.split("@")[ -1].split(":")[0]
+            if host.startswith("www."):
+                host = host[4:]
+            if not host:
+                return ""
+
+            social_hosts = {"twitter.com", "x.com", "linkedin.com", "www.linkedin.com"}
+            if host in social_hosts:
+                path_parts = [part for part in parsed.path.split("/") if part]
+                if path_parts:
+                    reserved = {"company", "jobs", "posts", "status", "share", "intent", "home", "search", "hashtag"}
+                    slug = path_parts[0].lstrip("@")
+                    if slug and slug.lower() not in reserved:
+                        slug = re.sub(r"[-_]+", " ", slug).strip()
+                        return slug.title() if slug else ""
+
+            parts = [p for p in host.split(".") if p]
+            if not parts:
+                return ""
+
+            if len(parts) >= 3 and parts[-2] in {"co", "com", "org", "net"} and len(parts[-1]) == 2:
+                base = parts[-3]
+            elif len(parts) >= 2:
+                base = parts[-2]
+            else:
+                base = parts[0]
+
+            base = re.sub(r"[-_]+", " ", base).strip()
+            return base.title() if base else ""
+        except Exception:
+            return ""
     
     def extract_contacts(self, sample_size: Optional[int] = None) -> List[Dict[str, Any]]:
         """
@@ -130,11 +173,21 @@ class ContactExtractor:
         
         # Determine source company column from known schema variants.
         company_col = self._resolve_company_column(df)
+        if not company_col and 'company_website' in df.columns:
+            df['company'] = df['company_website'].fillna('').apply(self._derive_company_from_website)
+            company_col = 'company'
+
         if not company_col:
             logger.error(
                 "No company name column found. Expected one of: company, company_name, employer, organization, company_slug"
             )
             return []
+
+        if 'company_website' in df.columns:
+            df[company_col] = df[company_col].fillna('').astype('string')
+            blank_company = df[company_col].str.strip() == ''
+            derived_company = df['company_website'].fillna('').apply(self._derive_company_from_website).astype('string')
+            df[company_col] = df[company_col].mask(blank_company, derived_company)
         logger.info("Using company column: %s", company_col)
 
         # Keep all unique companies for stats, then filter processable values.
@@ -219,7 +272,8 @@ class ContactExtractor:
         cto = record.get("cto", {}) or {}
 
         source_job_id = (
-            record.get("wantedly_project_id")
+            record.get("source_job_id")
+            or record.get("wantedly_project_id")
             or record.get("linkedin_job_id")
             or record.get("rubyonremote_job_id")
             or ""
