@@ -99,9 +99,10 @@ class ExecutiveContactFinder:
             google_api_key = os.getenv("GOOGLE_API_KEY")
             logger.info("Using Google Gemini")
             self.llm = ChatGoogleGenerativeAI(
-                model="gemini-pro",
+                model="gemini-flash-latest",
                 temperature=0,
-                google_api_key=google_api_key
+                google_api_key=google_api_key,
+                
             )
         else:
             raise ValueError(f"Unknown LLM_MODEL_TYPE: {llm_type}. Use 'ollama' or 'gemini'")

@@ -99,12 +99,12 @@ function renderHistoryActions(job) {
     return `
         <div class="job-action-groups">
             <div class="job-action-group">
-                <div class="job-action-label">Scrape</div>
+                <div class="job-action-label">Job</div>
                 <div class="job-actions-row">${scrapeActions.join('') || '<span class="job-action-empty">No actions</span>'}</div>
             </div>
             ${contactActions.length ? `
                 <div class="job-action-group job-action-group-contact">
-                    <div class="job-action-label">Contacts</div>
+                    <div class="job-action-label">Job With Contacts</div>
                     <div class="job-actions-row">${contactActions.join('')}</div>
                 </div>
             ` : ''}

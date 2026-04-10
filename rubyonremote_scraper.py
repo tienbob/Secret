@@ -149,12 +149,24 @@ def export_run_timestamp():
 
 
 def extract_company_website(driver, current_url):
+    """Extract company website from job listing page, filtering out tracking params."""
     try:
         anchors = driver.find_elements(By.CSS_SELECTOR, "a[href^='http']")
         for anchor in anchors:
             href = anchor.get_attribute("href")
-            if href and "rubyonremote.com" not in href and href != current_url:
-                return href
+            if not href or "rubyonremote.com" in href or href == current_url:
+                continue
+            
+            # Remove common tracking parameters
+            clean_href = re.sub(r'[?&](utm_|fbclid|gclid|mc_|_ga|_gl).*', '', href)
+            clean_href = clean_href.rstrip('?&')
+            
+            # Skip tracking/affiliate domains
+            skip_domains = {"bit.ly", "tinyurl.com", "shorturl", "aff.", "tracking"}
+            if any(skip in clean_href for skip in skip_domains):
+                continue
+            
+            return clean_href if clean_href else href
     except Exception:
         return None
     return None
@@ -236,15 +248,70 @@ def main():
                     "description": None
                 }
                 
-                # Scrape Title
-                try: 
-                    data['title'] = clean_text(driver.find_element(By.CSS_SELECTOR, "h1.schema-job-title").text)
-                except: pass
+                # Scrape Title (try multiple selectors as page structure may vary)
+                title = None
+                selectors = [
+                    "h1.schema-job-title",  # Primary selector
+                    "h1",                    # Any h1
+                    "[data-testid='job-title']",  # Common data attr
+                    ".job-title",            # Common class
+                    "div.title h1",          # Nested h1 in title div
+                ]
+                for selector in selectors:
+                    try:
+                        title = clean_text(driver.find_element(By.CSS_SELECTOR, selector).text)
+                        if title:
+                            break
+                    except:
+                        continue
                 
-                # Scrape Company
-                try: 
-                    data['company'] = clean_text(driver.find_element(By.CSS_SELECTOR, "div.rounded-lg h3").text)
-                except: pass
+                # Fallback: extract title from URL slug
+                if not title:
+                    try:
+                        # URL format: /jobs/72762-ruby-on-rails-developer-at-onthegosystems
+                        url_match = re.search(r'/jobs/\d+-(.+?)(?:$|[?#])', url)
+                        if url_match:
+                            slug = url_match.group(1)
+                            # Extract job title portion (before "-at-")
+                            if '-at-' in slug:
+                                title_part = slug.split('-at-')[0]
+                            else:
+                                title_part = slug
+                            # Replace hyphens with spaces and title case
+                            title = title_part.replace('-', ' ').replace('_', ' ').strip()
+                            title = clean_text(title)
+                            if title:
+                                title = ' '.join(word.capitalize() for word in title.split())
+                    except:
+                        pass
+                
+                data['title'] = title
+                
+                # Debug: log page title if extraction failed
+                if not data['title']:
+                    try:
+                        page_title = driver.execute_script("return document.title;")
+                        print(f"   [DEBUG] Page title: {page_title}")
+                    except:
+                        pass
+                
+                # Scrape Company (try multiple selectors)
+                company = None
+                company_selectors = [
+                    "div.rounded-lg h3",     # Primary selector
+                    "[data-testid='company-name']",
+                    ".company-name",
+                    "div.company h3",
+                    "a[href*='companies']",  # Company link
+                ]
+                for selector in company_selectors:
+                    try:
+                        company = clean_text(driver.find_element(By.CSS_SELECTOR, selector).text)
+                        if company:
+                            break
+                    except:
+                        continue
+                data['company'] = company
 
                 data['company_website'] = extract_company_website(driver, url)
                 
@@ -254,11 +321,23 @@ def main():
                     data['date'] = clean_text(date_el.text.replace("Published on", ""))
                 except: pass
                 
-                # Scrape Description
-                try:
-                    desc_el = driver.find_element(By.CSS_SELECTOR, "div.schema-job-description")
-                    data['description'] = clean_text(desc_el.text)
-                except: pass
+                # Scrape Description (try multiple selectors)
+                description = None
+                desc_selectors = [
+                    "div.schema-job-description",
+                    "[data-testid='job-description']",
+                    ".job-description",
+                    "div.description",
+                    "main article",
+                ]
+                for selector in desc_selectors:
+                    try:
+                        description = clean_text(driver.find_element(By.CSS_SELECTOR, selector).text)
+                        if description:
+                            break
+                    except:
+                        continue
+                data['description'] = description
 
                 if data['title']:
                     print(f"[{i+1}/{len(all_links)}] Scraped: {data['title']}")

@@ -38,28 +38,50 @@ class ContactExtractor:
     Main orchestrator for extracting executive contacts from job listings
     """
     
-    def __init__(self, input_csv_path: str, output_dir: str = "scraper_outputs", should_cancel=None):
+    def __init__(
+        self,
+        input_csv_path: str,
+        output_dir: str = "scraper_outputs",
+        input_name_hint: Optional[str] = None,
+        seed_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+        should_cancel=None,
+    ):
         """
         Initialize the contact extractor
         
         Args:
             input_csv_path: Path to the input CSV file
             output_dir: Directory to save enriched output CSV
+            input_name_hint: Optional file-name hint used for output naming
+            seed_cache: Optional cache of previously found contacts keyed by normalized company name
         """
         self.input_csv_path = input_csv_path
         self.output_dir = output_dir
+        self.input_name_hint = input_name_hint
         self.finder = ExecutiveContactFinder()
         self.should_cancel = should_cancel
-        self.cache = {}  # In-process cache to avoid duplicate searches
+        self.cache = {}
+        if seed_cache:
+            for raw_key, payload in seed_cache.items():
+                normalized = self._normalize_company_key(raw_key)
+                if normalized and isinstance(payload, dict):
+                    self.cache[normalized] = payload
         self.stats = {
             "total_companies": 0,
             "processable_companies": 0,
             "skipped_placeholder_companies": 0,
             "contacts_found": 0,
             "contacts_not_found": 0,
+            "cache_hits": 0,
             "api_calls": 0,
             "processing_time": 0
         }
+
+    @staticmethod
+    def _normalize_company_key(company_name: str) -> str:
+        if company_name is None:
+            return ""
+        return " ".join(str(company_name).strip().lower().split())
 
     @staticmethod
     def _is_placeholder_company(company_name: str) -> bool:
@@ -215,7 +237,8 @@ class ContactExtractor:
         
         # Pre-fill placeholders with empty result to avoid low-quality lookups and wasted API calls.
         for skipped_company in companies[placeholder_mask]['company'].tolist():
-            self.cache[skipped_company] = self._empty_contact_result(
+            cache_key = self._normalize_company_key(skipped_company)
+            self.cache[cache_key] = self._empty_contact_result(
                 skipped_company,
                 "placeholder_company_name",
             )
@@ -225,18 +248,24 @@ class ContactExtractor:
             if callable(self.should_cancel) and self.should_cancel():
                 raise ContactExtractionCancelled()
             company_name = company_row['company']
+            cache_key = self._normalize_company_key(company_name)
             
             # Check cache first
-            if company_name in self.cache:
+            if cache_key in self.cache:
                 logger.info(f"[Cache] Using cached data for: {company_name}")
-                contact_data = self.cache[company_name]
+                contact_data = self.cache[cache_key]
+                self.stats["cache_hits"] += 1
+                if contact_data.get("search_status") == "found":
+                    self.stats["contacts_found"] += 1
+                else:
+                    self.stats["contacts_not_found"] += 1
             else:
                 # Search for contacts
                 logger.info(f"[{idx+1}/{len(processable_companies)}] Searching contacts for: {company_name}")
                 contact_data = self.finder.find_executive_contacts(company_name)
                 if "search_reason" not in contact_data:
                     contact_data["search_reason"] = "searched"
-                self.cache[company_name] = contact_data
+                self.cache[cache_key] = contact_data
                 self.stats["api_calls"] += contact_data.get("search_attempts", 0)
                 
                 # Update stats
@@ -244,15 +273,16 @@ class ContactExtractor:
                     self.stats["contacts_found"] += 1
                 else:
                     self.stats["contacts_not_found"] += 1
-            
+
         # Enrich every original row using cached company results so no rows are dropped.
         for _, row in df.iterrows():
             if callable(self.should_cancel) and self.should_cancel():
                 raise ContactExtractionCancelled()
             record = row.to_dict()
             company_name = record.get(company_col, "")
+            cache_key = self._normalize_company_key(company_name)
             contact_data = self.cache.get(
-                company_name,
+                cache_key,
                 self._empty_contact_result(company_name, "missing_company_name"),
             )
             enriched = {**record, **contact_data}
@@ -330,7 +360,8 @@ class ContactExtractor:
         
         # Generate output filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        input_stem = Path(self.input_csv_path).stem
+        source_name = self.input_name_hint or self.input_csv_path
+        input_stem = Path(source_name).stem
         output_filename = f"{input_stem}_with_contacts_{timestamp}.csv"
         output_path = os.path.join(self.output_dir, output_filename)
         

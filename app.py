@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, jsonify, send_file
 import subprocess
 import os
+import csv
 import threading
 from datetime import datetime
 import io
@@ -247,6 +248,72 @@ def build_csv_download(content: str, filename: str):
         download_name=filename,
         mimetype='text/csv; charset=utf-8',
     )
+
+
+def normalize_company_key(company_name: str) -> str:
+    if company_name is None:
+        return ''
+    return ' '.join(str(company_name).strip().lower().split())
+
+
+def build_previous_found_contact_cache() -> dict:
+    """Build normalized company->contact cache from completed historical contact jobs."""
+    cache = {}
+    for contact_job in db.list_contact_jobs():
+        if contact_job.get('status') != 'completed':
+            continue
+
+        csv_content = contact_job.get('output_csv_content')
+        if not csv_content:
+            continue
+
+        try:
+            reader = csv.DictReader(io.StringIO(csv_content))
+            for row in reader:
+                company = (row.get('company') or '').strip()
+                status = (row.get('search_status') or '').strip().lower()
+                if not company or status != 'found':
+                    continue
+
+                key = normalize_company_key(company)
+                if not key or key in cache:
+                    continue
+
+                ceo = {
+                    'name': row.get('ceo_name', ''),
+                    'title': row.get('ceo_title', ''),
+                    'email': row.get('ceo_email', ''),
+                    'linkedin_url': row.get('ceo_linkedin_url', ''),
+                    'source_query': '',
+                    'search_attempt': 0,
+                }
+                cto = {
+                    'name': row.get('cto_name', ''),
+                    'title': row.get('cto_title', ''),
+                    'email': row.get('cto_email', ''),
+                    'linkedin_url': row.get('cto_linkedin_url', ''),
+                    'source_query': '',
+                    'search_attempt': 0,
+                }
+
+                try:
+                    confidence = float(row.get('search_confidence', '') or 0.0)
+                except ValueError:
+                    confidence = 0.0
+
+                cache[key] = {
+                    'company_name': company,
+                    'ceo': ceo,
+                    'cto': cto,
+                    'search_status': 'found',
+                    'search_attempts': 0,
+                    'search_confidence': confidence,
+                    'search_reason': 'reused_previous_found',
+                }
+        except Exception:
+            continue
+
+    return cache
 
 def start_cleanup_thread():
     def cleanup_loop():
@@ -596,6 +663,7 @@ def find_contacts_for_job(job_id):
 
     csv_content = job.get('output_csv_content')
     input_csv = job.get('output_file')
+    input_name_hint = os.path.basename(input_csv) if input_csv else None
     if csv_content:
         temp_input = tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8')
         temp_input.write(csv_content)
@@ -620,31 +688,30 @@ def find_contacts_for_job(job_id):
         'started_at': datetime.now(),
     })
 
-    thread = threading.Thread(target=run_contact_finder, args=(contact_job_id, input_csv))
+    thread = threading.Thread(target=run_contact_finder, args=(contact_job_id, input_csv, input_name_hint))
     thread.daemon = True
     thread.start()
 
     return jsonify({'contact_job_id': contact_job_id, 'status': 'started'})
 
-def run_contact_finder(contact_job_id, input_csv):
+def run_contact_finder(contact_job_id, input_csv, input_name_hint=None):
     try:
         from contact_extractor import ContactExtractor, ContactExtractionCancelled
 
         db.update_contact_job(contact_job_id, progress='Loading CSV...')
+        seed_cache = build_previous_found_contact_cache()
         extractor = ContactExtractor(
             input_csv,
             OUTPUT_DIR,
+            input_name_hint=input_name_hint,
+            seed_cache=seed_cache,
             should_cancel=lambda: contact_job_id in active_contact_cancel_flags,
         )
 
         db.update_contact_job(contact_job_id, progress='Extracting executive contacts...')
 
-        # Extract contacts (set a reasonable sample if too large)
-        import pandas as pd
-        df = pd.read_csv(input_csv)
-        sample_size = min(100, len(df))  # Limit to 100 companies for API rate limits
-
-        enriched_records = extractor.extract_contacts(sample_size=sample_size)
+        # Extract contacts for all rows; duplicate companies are handled by extractor cache.
+        enriched_records = extractor.extract_contacts()
 
         if contact_job_id in active_contact_cancel_flags:
             db.update_contact_job(contact_job_id, status='cancelled', progress='Cancelled by user.')

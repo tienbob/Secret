@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Universal Job Scraper</title>
+    <title>Universal Job Finder</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <!-- Link to Static CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -12,7 +12,7 @@
 
 <div class="container">
     <div class="card">
-        <h1>Job Scraper</h1>
+        <h1>Job Finder</h1>
         <form id="scrapeForm">
             <div class="form-grid">
                 <div class="full form-block form-block-shared">
@@ -60,7 +60,7 @@
                 </div>
 
                 <div class="form-block form-block-shared">
-                    <label>Pages to Scrape</label>
+                    <label>Pages to Find</label>
                     <input type="number" id="max_pages" value="1" min="1" max="10" placeholder="1-10">
                 </div>
 
@@ -135,7 +135,7 @@
                     <label for="only_new">Wantedly: Only New</label>
                 </div>
             </div>
-            <button type="submit" id="startBtn" class="btn">Start Scraping</button>
+            <button type="submit" id="startBtn" class="btn">Start Finding</button>
         </form>
     </div>
 
